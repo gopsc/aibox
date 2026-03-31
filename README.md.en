@@ -1,0 +1,367 @@
+# AI Agent System - WebSocket Server
+
+Single AI agent system supporting file operations, web access, memory management, memo reminders, and more. All tasks are executed through AI conversations with real-time WebSocket interaction with the frontend.
+
+## 📋 Table of Contents
+
+- [Quick Start](#quick-start)
+- [Launch Methods](#launch-methods)
+- [Features](#features)
+- [Configuration](#configuration)
+- [WebSocket API](#websocket-api)
+- [Task System](#task-system)
+- [Tool List](#tool-list)
+- [Extension Skills](#extension-skills)
+- [Command Reference](#command-reference)
+- [Project Structure](#project-structure)
+
+## 🚀 Quick Start
+
+### Requirements
+- Python 3.12+
+- DeepSeek API Key
+
+### First Launch
+```bash
+# First launch (automatically creates necessary directories and configuration files)
+bash _set.sh
+```
+
+### Start Services
+```bash
+# Start AGENT service (WebSocket server)
+bash _run.sh
+
+# Start web client (if using the provided web interface)
+bash _runapp.sh
+```
+
+## 🎯 Launch Methods
+
+### Detailed Launch Steps
+
+1. **First Run (Initialization)**
+   ```bash
+   bash _set.sh
+   ```
+   This command will:
+   - Create `~/.aibox/` data directory
+   - Generate default configuration file `~/.aibox/config.json`
+   - Create prompts directory `~/.aibox/prompts/`
+   - Create skills directory `~/.aibox/skills/`
+   - Initialize databases
+
+2. **Start WebSocket Server**
+   ```bash
+   bash _run.sh
+   ```
+   Default listening: `ws://localhost:8765`
+
+3. **Start Web Client**
+   ```bash
+   bash _runapp.sh
+   ```
+   Open browser at `http://localhost:8080`
+
+### Command Line Options
+
+```bash
+python ai20.py [options]
+
+Options:
+  --verbose, -v        Show detailed logs
+  --debug LEVEL        Debug level (0-3)
+  --host HOST         WebSocket server host (default: localhost)
+  --port PORT         WebSocket server port (default: 8765)
+  --lang {zh,en}      Force language selection
+  --no-scheduler      Disable task scheduler
+  --scheduler-interval Scheduler check interval (seconds)
+  
+  # Task management shortcuts
+  --check-memo        Immediately check due tasks and exit
+  --memo-add STR      Add task, format: "title|content|reminder_time|repeat_type|repeat_interval|unit"
+  --memo-list         List tasks
+  --memo-complete ID  Complete task with specified ID
+```
+
+## ✨ Features
+
+### Core Features
+- **🤖 Intelligent Conversation** - Based on DeepSeek API with tool calling support
+- **📁 File Operations** - Read/write files, list directories
+- **🌐 Web Access** - Fetch web content, search keywords
+- **🧠 Memory Management** - Automatically save and retrieve important conversation content
+- **⏰ Task System** - Support for one-time, recurring, and immediate tasks
+- **🔧 Extension Skills** - Dynamically extend functionality through external scripts
+
+### Special Features
+- **Tasks as Conversations** - All scheduled tasks are executed as AI conversations
+- **Real-time Broadcasting** - Task status and execution process streamed to frontend in real-time
+- **Multi-language Support** - Automatically detects system language (Chinese/English)
+- **Streaming Output** - Command execution and AI thinking process displayed in real-time
+
+## ⚙️ Configuration
+
+Configuration file location: `~/.aibox/config.json`
+
+```json
+{
+  "system": {
+    "save_dir": "~/.aibox",
+    "debug_level": 1,
+    "websocket_host": "localhost",
+    "websocket_port": 8765,
+    "skills_dir": "~/.aibox/skills",
+    "prompts_dir": "~/.aibox/prompts"
+  },
+  "scheduler": {
+    "enabled": true,
+    "check_interval": 1.0,
+    "max_tasks_per_run": 10,
+    "broadcast_enabled": true
+  },
+  "api": {
+    "deepseek_api_url": "https://api.deepseek.com/v1/chat/completions",
+    "deepseek_model": "deepseek-chat",
+    "api_key_env": "DEEPSEEK_API_KEY"
+  },
+  "memory": {
+    "db_name": "memories.db",
+    "max_search_results": 100
+  }
+}
+```
+
+## 🔌 WebSocket API
+
+### Connection
+```
+ws://localhost:8765
+```
+
+### Message Formats
+
+#### 1. Send Message
+```json
+{
+  "type": "message",
+  "content": "your question"
+}
+```
+
+#### 2. Send Command
+```json
+{
+  "type": "command",
+  "command": "/help"
+}
+```
+
+#### 3. Task Operations
+```json
+{
+  "type": "task",
+  "action": "add",
+  "title": "Remind me to drink water",
+  "content": "Remember to drink water",
+  "delay": 3600,
+  "repeat_type": "custom",
+  "repeat_interval": 30,
+  "repeat_interval_unit": "minutes"
+}
+```
+
+### Received Message Types
+
+| Type | Description |
+|------|-------------|
+| `chunk` | Streaming fragments of AI response |
+| `complete` | AI response complete |
+| `error` | Error message |
+| `info` | System information |
+| `task_status` | Task status update |
+| `task_executing` | Task execution started |
+| `task_complete` | Task execution completed |
+
+## 📅 Task System
+
+### Task Types
+
+1. **One-time Tasks** - Execute once at specified time
+2. **Recurring Tasks** - Repeat daily/weekly/monthly/custom intervals
+3. **Immediate Tasks** - Execute immediately (for quick triggering)
+
+### Recurring Task Configuration
+
+```json
+{
+  "repeat_type": "custom",  // none, daily, weekly, monthly, custom
+  "repeat_interval": 5,
+  "repeat_interval_unit": "minutes",  // minutes, hours, days
+  "repeat_end_time": "2024-12-31 23:59:59"  // optional
+}
+```
+
+### Task State Flow
+```
+Created → Pending → Trigger AI Conversation → Update Next Time/Complete → End
+```
+
+## 🛠️ Tool List
+
+AI can perform operations using the following tools:
+
+| Tool Name | Function | Example |
+|-----------|----------|---------|
+| `memo` | Task management | `memo add title="Reminder" reminder_time="+1h"` |
+| `memory` | Memory management | `memory search keywords=["meeting"]` |
+| `web` | Web access | `web get url="https://example.com"` |
+| `read_file` | Read file | `read_file filepath="~/test.txt"` |
+| `write_file` | Write file | `write_file filepath="~/test.txt" content="Hello"` |
+| `list_files` | List directory | `list_files directory="~/"` |
+| `run_command` | Execute command | `run_command command="ls -la"` |
+| `get_current_time` | Get current time | `get_current_time format="full"` |
+| `calculator` | Mathematical calculations | `calculator a=10 b=5 operation="add"` |
+| `save_memory_and_end_conversation` | End conversation | `save_memory_and_end_conversation summary="..."` |
+
+## 🔧 Extension Skills
+
+Place Python scripts in `~/.aibox/skills/` directory. Scripts need to implement the following interface:
+
+### Script Specification
+
+```python
+#!/usr/bin/env python3
+import sys
+import json
+import argparse
+
+def get_description():
+    """Return tool description"""
+    return "Tool function description"
+
+def get_parameters():
+    """Return parameter definition (JSON Schema format)"""
+    return {
+        "type": "object",
+        "properties": {
+            "param1": {"type": "string", "description": "Parameter description"}
+        },
+        "required": ["param1"]
+    }
+
+def execute(**kwargs):
+    """Execute tool logic"""
+    # Process parameters
+    result = f"Processing result: {kwargs}"
+    return result
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--description", action="store_true")
+    parser.add_argument("--parameters", action="store_true")
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--args", type=str)
+    
+    args = parser.parse_args()
+    
+    if args.description:
+        print(get_description())
+    elif args.parameters:
+        print(json.dumps(get_parameters()))
+    elif args.execute:
+        kwargs = json.loads(args.args) if args.args else {}
+        result = execute(**kwargs)
+        print(result)
+```
+
+## 📟 Command Reference
+
+Commands available in WebSocket connections:
+
+| Command | Description |
+|---------|-------------|
+| `/exit` | Exit connection |
+| `/new` | Start new conversation |
+| `/list` | List all conversations |
+| `/memories` | View recent memories |
+| `/memos` | View pending tasks |
+| `/search <keyword>` | Search memories |
+| `/config` | View configuration |
+| `/reload` | Reload configuration |
+| `/reload_prompts` | Reload prompts |
+| `/check` | Check expired tasks |
+| `/tasks` | View task status |
+| `/help` | Show help |
+
+## 📁 Project Structure
+
+```
+~/.aibox/
+├── config.json                 # Configuration file
+├── memories.db                 # SQLite database (memories and tasks)
+├── current_conversation.json   # Current conversation
+├── conversation_history.json   # Conversation history index
+├── archive/                    # Archived conversations
+├── prompts/                    # System prompts
+│   ├── 00_no_timestamp.txt
+│   ├── 01_identity.txt
+│   └── ...
+└── skills/                     # Extension skills
+    └── example_skill.py
+```
+
+## 📝 Prompt Management
+
+System prompts are loaded in filename order from `~/.aibox/prompts/`:
+
+- `00_no_timestamp.txt` - No timestamp output rule
+- `01_identity.txt` - AI identity definition
+- `02_memory_search.txt` - Memory search habits
+- `03_memory_save.txt` - Memory saving habits
+- ...
+
+## 🌐 Language Support
+
+The system automatically detects system language (Chinese/English). Can be forced via environment variable or command line:
+
+```bash
+# Environment variable
+export AI_LANGUAGE=en
+
+# Command line
+python ai20.py --lang en
+```
+
+## 🚨 Important Notes
+
+1. **API Key**: Requires `DEEPSEEK_API_KEY` environment variable
+2. **File Safety**: File operations are limited to user directory
+3. **Command Execution**: Enabled by default, can be disabled via configuration
+4. **Data Storage**: All data stored in `~/.aibox/`
+5. **Task Execution**: All tasks trigger AI conversations, ensure AI is active
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+1. **WebSocket Connection Failed**
+   - Check if port is occupied
+   - Verify firewall settings
+
+2. **Tasks Not Executing**
+   - Check if scheduler is enabled
+   - Verify task time format is correct
+
+3. **API Call Failed**
+   - Verify `DEEPSEEK_API_KEY` is set correctly
+   - Check network connection
+
+### Log Viewing
+Log file location: `~/.aibox/ai.log`
+
+---
+
+## 📄 License
+
+MIT License
