@@ -2,6 +2,8 @@
 
 一个功能强大的AI智能体系统，支持对话管理、文件操作、网页访问、记忆管理、任务调度等功能。所有任务都作为对话任务执行，通过WebSocket与客户端实时交互。
 
+> 📌 **前端说明**：本项目的 Web 管理界面和交互前端由 [SMN 项目](https://github.com/gopsc/smn) 托管提供。SMN 是一个功能完善的 Web 文件管理工具，支持用户认证、文件操作和代理功能，与本AI智能体后端配合使用可提供完整的AI助手解决方案。
+
 ## ✨ 核心特性
 
 ### 🤖 AI对话
@@ -58,11 +60,20 @@
 - Python 3.8+
 - DeepSeek API密钥
 
-### 安装依赖
+### 一键安装环境
+
+使用提供的 `_set.sh` 脚本自动安装所有依赖：
 
 ```bash
-pip install websockets requests beautifulsoup4
+chmod +x _set.sh
+./_set.sh
 ```
+
+该脚本会自动完成：
+- 检查 Python 环境
+- 升级 pip 到最新版本
+- 安装所有必需的 Python 包（websockets, requests, beautifulsoup4）
+- 验证安装是否成功
 
 ### 配置API密钥
 
@@ -84,7 +95,37 @@ export DEEPSEEK_API_KEY="your-api-key-here"
 }
 ```
 
-### 启动服务器
+### 运行服务
+
+使用 `_run.sh` 脚本启动服务：
+
+```bash
+chmod +x _run.sh
+./_run.sh
+```
+
+服务启动后会显示：
+
+```
+============================================================
+AI智能体系统启动成功
+WebSocket服务器: ws://localhost:8765
+============================================================
+```
+
+### 手动安装（备选）
+
+如果自动脚本失败，可以手动执行：
+
+```bash
+# 安装依赖
+pip install websockets requests beautifulsoup4
+
+# 启动服务
+python ai_agent.py
+```
+
+### 命令行参数
 
 ```bash
 # 基本启动
@@ -103,14 +144,74 @@ python ai_agent.py --no-scheduler
 python ai_agent.py --help
 ```
 
+## 🔗 与 SMN 前端集成
+
+本AI智能体后端需要配合 [SMN 项目](https://github.com/gopsc/smn) 的前端界面使用。SMN 提供了完整的 Web 管理界面、用户认证和代理功能。
+
+### 集成步骤
+
+1. **克隆 SMN 项目**
+   ```bash
+   git clone https://github.com/gopsc/smn.git
+   cd smn
+   ```
+
+2. **配置 SMN 代理**
+   
+   编辑 SMN 项目的 `config.ini` 文件，添加AI智能体 WebSocket 的代理配置：
+   ```ini
+   [proxy]
+   enabled = true
+   allowed_targets = ws://localhost:8765
+   ```
+
+3. **启动 SMN 前端**
+   ```bash
+   ./_run.sh  # SMN 项目的前端启动脚本
+   ```
+
+4. **启动 AI 智能体后端**
+   ```bash
+   cd /path/to/ai-agent
+   ./_run.sh
+   ```
+
+5. **访问 Web 界面**
+   
+   打开浏览器访问 SMN 前端地址（默认 `http://localhost:5000`），通过代理功能连接到AI智能体后端，即可开始使用AI对话功能。
+
+### 架构说明
+
+```
+┌─────────────────┐     HTTP/WebSocket  ┌─────────────┐
+│  SMN 前端界面    │ ◄────────────────► │  AI Agent   │
+│  (Web UI)       │      代理           │  (Port 8765) │
+│                 │                     │             │
+└─────────────────┘                     └─────────────┘
+```
+
+SMN 前端负责：
+- 用户认证和权限管理
+- Web 界面展示
+- HTTP/WebSocket 代理转发
+- 文件管理界面
+
+AI 智能体后端负责：
+- AI 对话处理
+- 工具调用执行
+- 记忆和任务管理
+- WebSocket 实时通信
+
 ## 📖 使用指南
 
 ### WebSocket连接
 
-连接到服务器：
+通过 SMN 前端代理连接到AI智能体：
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8765');
+// SMN 前端会自动处理代理连接
+// 实际 WebSocket 地址：ws://localhost:5000/proxy/ws/localhost:8765
+const ws = new WebSocket('ws://localhost:5000/proxy/ws/localhost:8765');
 ```
 
 ### 发送消息
@@ -307,6 +408,12 @@ if __name__ == "__main__":
 │   ├── 99_SOUL.md           # AI灵魂定义
 │   └── 100_STATUS.md        # AI状态记录
 └── tool_results/            # 工具结果缓存
+
+项目根目录/
+├── ai_agent.py              # 主程序文件
+├── _set.sh                  # 环境安装脚本
+├── _run.sh                  # 服务启动脚本
+└── README.md                # 项目文档
 ```
 
 ## ⚙️ 配置说明
@@ -425,6 +532,7 @@ python ai_agent.py --lang en
 ### 连接失败
 - 检查WebSocket服务器是否启动
 - 确认端口没有被占用
+- 检查SMN前端代理配置是否正确
 
 ### API调用失败
 - 确认DeepSeek API密钥已正确设置
@@ -434,6 +542,16 @@ python ai_agent.py --lang en
 - 检查调度器是否启用
 - 确认任务提醒时间是否正确
 
+### `_set.sh` 脚本执行失败？
+- 确认 Python 版本 >= 3.8
+- 检查是否有管理员权限（某些系统需要 sudo）
+- 手动执行 `pip install websockets requests beautifulsoup4`
+
+### SMN 前端无法连接？
+- 确认AI智能体后端已启动（`./_run.sh`）
+- 检查SMN的 `config.ini` 中代理白名单是否包含 `ws://localhost:8765`
+- 查看SMN和AI后端的日志输出
+
 ## 📄 许可证
 
 MIT License
@@ -441,3 +559,7 @@ MIT License
 ## 🤝 贡献
 
 欢迎提交Issue和Pull Request！
+
+## 相关项目
+
+- [SMN](https://github.com/gopsc/smn) - 前端 Web 管理界面和代理服务
