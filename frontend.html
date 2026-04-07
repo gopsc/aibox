@@ -1,0 +1,1687 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI智能助手 - WebSocket直连</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <style>
+        /* 样式保持不变，完全使用原有的样式 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: flex;
+            height: 100vh;
+            background: #1e1e1e;
+        }
+
+        .sidebar {
+            width: 280px;
+            background: #252526;
+            border-right: 1px solid #3d3d3d;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #3d3d3d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sidebar-header h2 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .sidebar-header h2 i {
+            color: #4CAF50;
+            margin-right: 8px;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-dot.connected {
+            background: #4CAF50;
+            box-shadow: 0 0 8px #4CAF50;
+        }
+
+        .status-dot.disconnected {
+            background: #f44336;
+        }
+
+        .status-text {
+            color: #8b949e;
+        }
+
+        .connection-panel {
+            padding: 16px;
+            border-bottom: 1px solid #3d3d3d;
+        }
+
+        .connection-panel h3 {
+            font-size: 14px;
+            color: #8b949e;
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+
+        .input-group {
+            margin-bottom: 12px;
+        }
+
+        .input-group label {
+            display: block;
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 4px;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 8px 12px;
+            background: #3d3d3d;
+            border: 1px solid #4d4d4d;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        .input-group input:focus {
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+        }
+
+        .button-group {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn {
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.3s;
+            flex: 1;
+            justify-content: center;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: #4CAF50;
+            color: #fff;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #45a049;
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: #3d3d3d;
+            color: #8b949e;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #4d4d4d;
+            color: #fff;
+        }
+
+        .commands-panel {
+            padding: 16px;
+            border-bottom: 1px solid #3d3d3d;
+        }
+
+        .commands-panel h3 {
+            font-size: 14px;
+            color: #8b949e;
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+
+        .command-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .command-item {
+            padding: 6px 8px;
+            background: #3d3d3d;
+            border: none;
+            border-radius: 4px;
+            color: #8b949e;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.3s;
+        }
+
+        .command-item:hover {
+            background: #4d4d4d;
+            color: #fff;
+            transform: translateY(-1px);
+        }
+
+        .stats-panel {
+            padding: 16px;
+            border-bottom: 1px solid #3d3d3d;
+        }
+
+        .stats-panel h3 {
+            font-size: 14px;
+            color: #8b949e;
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+
+        .stats-content p {
+            font-size: 13px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #8b949e;
+        }
+
+        .stats-content i {
+            width: 16px;
+            color: #4CAF50;
+        }
+
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #1e1e1e;
+        }
+
+        .chat-header {
+            padding: 16px 24px;
+            background: #252526;
+            border-bottom: 1px solid #3d3d3d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-title {
+            font-size: 16px;
+            font-weight: 500;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .chat-title i {
+            color: #4CAF50;
+        }
+
+        .chat-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-icon {
+            width: 32px;
+            height: 32px;
+            background: #3d3d3d;
+            border: none;
+            border-radius: 6px;
+            color: #8b949e;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+
+        .btn-icon:hover {
+            background: #4d4d4d;
+            color: #fff;
+            transform: translateY(-1px);
+        }
+
+        .btn-icon.active {
+            color: #4CAF50;
+            background: rgba(76, 175, 80, 0.1);
+        }
+
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        .message {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 24px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 6px;
+            background: #3d3d3d;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .user-message {
+            border-right: 3px solid #2196F3;
+            padding-right: 12px;
+            margin-right: -15px;
+        }
+
+        .user-message .message-avatar {
+            background: #1e3a8a;
+            color: #2196F3;
+            box-shadow: 0 0 10px rgba(33, 150, 243, 0.3);
+        }
+
+        .user-message .message-header .message-sender {
+            color: #2196F3;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .user-message .message-text {
+            font-size: 15px;
+            font-weight: 500;
+            background: rgba(33, 150, 243, 0.05);
+            border-radius: 8px;
+            padding: 12px 16px;
+            border: 1px solid rgba(33, 150, 243, 0.1);
+        }
+
+        .ai-message .message-avatar {
+            background: #1e4620;
+            color: #4CAF50;
+        }
+
+        .task-message {
+            border-left: 3px solid #ff9800;
+            padding-left: 12px;
+            margin-left: -15px;
+        }
+
+        .task-message .message-avatar {
+            background: #4a2c1e;
+            color: #ff9800;
+        }
+
+        .task-message .message-header .message-sender {
+            color: #ff9800;
+            font-weight: 700;
+            font-size: 14px;
+        }
+
+        .task-message .message-header .message-sender::before {
+            content: "⚡ ";
+            font-size: 12px;
+        }
+
+        .system-message .message-avatar {
+            background: #1e3a5f;
+            color: #2196F3;
+        }
+
+        .error-message .message-avatar {
+            background: #5f1e1e;
+            color: #f44336;
+        }
+
+        .message-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .message-sender {
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .message-time {
+            color: #8b949e;
+            font-size: 11px;
+        }
+
+        .message-text {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #e0e0e0;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+
+        .message.streaming .message-text {
+            border-right: 2px solid #4CAF50;
+            animation: blink-cursor 1s step-end infinite;
+            padding-right: 4px;
+        }
+
+        .task-message.streaming .message-text {
+            border-right-color: #ff9800;
+        }
+
+        @keyframes blink-cursor {
+            from, to { border-color: transparent; }
+            50% { border-color: #4CAF50; }
+        }
+
+        .input-area {
+            padding: 20px 24px;
+            background: #252526;
+            border-top: 1px solid #3d3d3d;
+        }
+
+        .message-type-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .tab-btn {
+            padding: 6px 12px;
+            background: #3d3d3d;
+            border: none;
+            border-radius: 4px;
+            color: #8b949e;
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.3s;
+        }
+
+        .tab-btn.active {
+            background: #4CAF50;
+            color: #fff;
+        }
+
+        .input-wrapper {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        .input-wrapper textarea {
+            flex: 1;
+            padding: 12px 16px;
+            background: #3d3d3d;
+            border: 1px solid #4d4d4d;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 14px;
+            line-height: 1.5;
+            resize: none;
+            max-height: 200px;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        .input-wrapper textarea:focus {
+            border-color: #4CAF50;
+            box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.2);
+        }
+
+        .input-wrapper textarea:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-send {
+            width: 44px;
+            height: 44px;
+            background: #4CAF50;
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+
+        .btn-send:hover:not(:disabled) {
+            background: #45a049;
+            transform: translateY(-1px);
+        }
+
+        .btn-send:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .input-tips {
+            display: flex;
+            gap: 16px;
+            margin-top: 8px;
+            font-size: 11px;
+            color: #8b949e;
+        }
+
+        .input-tips i {
+            margin-right: 4px;
+            color: #4CAF50;
+        }
+
+        .markdown-body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            font-size: 14px;
+            line-height: 1.6;
+            word-wrap: break-word;
+        }
+        
+        .markdown-body pre {
+            background-color: #1e1e1e;
+            border-radius: 6px;
+            padding: 16px;
+            overflow: auto;
+            margin: 10px 0;
+            position: relative;
+        }
+        
+        .markdown-body code {
+            background-color: rgba(175, 184, 193, 0.2);
+            border-radius: 4px;
+            padding: 0.2em 0.4em;
+            font-family: 'SF Mono', Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+            font-size: 85%;
+        }
+        
+        .markdown-body pre code {
+            background-color: transparent;
+            padding: 0;
+            white-space: pre;
+        }
+        
+        .markdown-body table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 10px 0;
+        }
+        
+        .markdown-body th,
+        .markdown-body td {
+            border: 1px solid #3d3d3d;
+            padding: 6px 13px;
+        }
+        
+        .markdown-body th {
+            background-color: #2d2d2d;
+            font-weight: 600;
+        }
+        
+        .markdown-body blockquote {
+            padding: 0 1em;
+            color: #8b949e;
+            border-left: 0.25em solid #3d3d3d;
+            margin: 0;
+        }
+        
+        .code-block-wrapper {
+            position: relative;
+        }
+        
+        .copy-code-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            padding: 4px 8px;
+            background-color: #2d2d2d;
+            border: 1px solid #3d3d3d;
+            border-radius: 4px;
+            color: #8b949e;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            z-index: 10;
+        }
+        
+        .copy-code-btn:hover {
+            background-color: #3d3d3d;
+            color: #ffffff;
+        }
+
+        .welcome-message .ai-message {
+            opacity: 0.8;
+        }
+
+        .task-separator {
+            margin: 20px 0 10px 0;
+            padding: 8px 12px;
+            background: linear-gradient(to right, #2d2d2d, #1e1e1e);
+            border-radius: 6px;
+            font-size: 13px;
+            color: #ff9800;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-left: 3px solid #ff9800;
+            font-weight: 500;
+        }
+
+        .task-separator i {
+            font-size: 14px;
+            color: #ff9800;
+        }
+
+        .task-separator span {
+            flex: 1;
+        }
+
+        .task-separator .task-id {
+            color: #8b949e;
+            font-size: 11px;
+            font-weight: normal;
+            background: #3d3d3d;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+
+        .multiple-tasks-info {
+            margin: 15px 0;
+            padding: 12px;
+            background: #2d2d2d;
+            border-radius: 8px;
+            border: 1px solid #3d3d3d;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: #8b949e;
+        }
+
+        .multiple-tasks-info i {
+            color: #ff9800;
+            font-size: 18px;
+        }
+
+        .multiple-tasks-info span {
+            flex: 1;
+            font-size: 13px;
+        }
+
+        .task-execution-count {
+            font-size: 11px;
+            color: #ff9800;
+            background: rgba(255, 152, 0, 0.1);
+            padding: 2px 6px;
+            border-radius: 12px;
+            margin-left: 8px;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #3d3d3d;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4d4d4d;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2><i class="fas fa-robot"></i> AI助手</h2>
+                <div class="connection-status" id="connection-status">
+                    <span class="status-dot disconnected"></span>
+                    <span class="status-text">未连接</span>
+                </div>
+            </div>
+            
+            <div class="connection-panel">
+                <h3>WebSocket 直连设置</h3>
+                <div class="input-group">
+                    <label for="ws-url">WebSocket地址:</label>
+                    <input type="text" id="ws-url" value="ws://localhost:8765" placeholder="ws://localhost:8765">
+                </div>
+                <div class="button-group">
+                    <button id="connect-btn" class="btn btn-primary">
+                        <i class="fas fa-plug"></i> 连接
+                    </button>
+                    <button id="disconnect-btn" class="btn btn-secondary" disabled>
+                        <i class="fas fa-power-off"></i> 断开
+                    </button>
+                </div>
+                <div class="input-tips" style="margin-top: 8px; font-size: 11px;">
+                    <i class="fas fa-info-circle"></i> WebSocket 直连后端服务器
+                </div>
+            </div>
+            
+            <div class="commands-panel">
+                <h3>常用命令</h3>
+                <div class="command-list">
+                    <button class="command-item" data-command="/help">
+                        <i class="fas fa-question-circle"></i> /help
+                    </button>
+                    <button class="command-item" data-command="/list">
+                        <i class="fas fa-list"></i> /list
+                    </button>
+                    <button class="command-item" data-command="/memories">
+                        <i class="fas fa-brain"></i> /memories
+                    </button>
+                    <button class="command-item" data-command="/memos">
+                        <i class="fas fa-sticky-note"></i> /memos
+                    </button>
+                    <button class="command-item" data-command="/check">
+                        <i class="fas fa-bell"></i> /check
+                    </button>
+                    <button class="command-item" data-command="/config">
+                        <i class="fas fa-cog"></i> /config
+                    </button>
+                    <button class="command-item" data-command="/new">
+                        <i class="fas fa-plus-circle"></i> /new
+                    </button>
+                    <button class="command-item" data-command="/tasks">
+                        <i class="fas fa-tasks"></i> /tasks
+                    </button>
+                </div>
+            </div>
+            
+            <div class="stats-panel" id="stats-panel" style="display: none;">
+                <h3>会话统计</h3>
+                <div class="stats-content">
+                    <p><i class="fas fa-clock"></i> <span id="connect-time">-</span></p>
+                    <p><i class="fas fa-envelope"></i> <span id="message-count">0</span> 条消息</p>
+                    <p><i class="fas fa-bolt"></i> <span id="tool-count">0</span> 工具调用</p>
+                    <p><i class="fas fa-tasks"></i> <span id="task-count">0</span> 个活跃任务</p>
+                </div>
+            </div>
+        </aside>
+        
+        <main class="chat-area">
+            <div class="chat-header">
+                <div class="chat-title">
+                    <i class="fas fa-comment-dots"></i>
+                    <span>对话窗口</span>
+                </div>
+                <div class="chat-actions">
+                    <button id="markdown-toggle" class="btn-icon" title="切换Markdown预览">
+                        <i class="fas fa-markdown"></i>
+                    </button>
+                    <button id="clear-chat-btn" class="btn-icon" title="清空聊天">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                    <button id="scroll-bottom-btn" class="btn-icon" title="滚动到底部">
+                        <i class="fas fa-arrow-down"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <div class="messages-container" id="messages-container">
+                <div class="welcome-message">
+                    <div class="message ai-message">
+                        <div class="message-avatar">
+                            <i class="fas fa-robot"></i>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-header">
+                                <span class="message-sender">AI助手</span>
+                                <span class="message-time">刚刚</span>
+                            </div>
+                            <div class="message-text markdown-body">
+                                <p>欢迎使用AI智能助手！</p>
+                                <p>请点击"连接"按钮直接连接到 WebSocket 服务器。</p>
+                                <p>连接后，您可以直接输入问题或使用 /help 查看可用命令。</p>
+                                <p><strong>✨ 支持Markdown格式</strong> - 代码、表格、列表等都将美化显示</p>
+                                <p><strong>⚡ 定时任务将使用橙色显示，每个任务独立显示，不会混在一起</strong></p>
+                                <p><strong>🔄 多个定时任务可以同时执行，互不干扰</strong></p>
+                                <p><strong>🔌 使用 WebSocket 直连后端服务器</strong></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <div class="message-type-tabs">
+                    <button class="tab-btn active" data-type="message">
+                        <i class="fas fa-comment"></i> 消息
+                    </button>
+                    <button class="tab-btn" data-type="command">
+                        <i class="fas fa-terminal"></i> 命令
+                    </button>
+                </div>
+                
+                <div class="input-wrapper">
+                    <textarea 
+                        id="message-input" 
+                        placeholder="输入消息... (按 Enter 发送，Shift+Enter 换行)"
+                        rows="1"
+                        disabled
+                    ></textarea>
+                    <button id="send-btn" class="btn-send" disabled>
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+                
+                <div class="input-tips">
+                    <span><i class="fas fa-keyboard"></i> Enter发送，Shift+Enter换行</span>
+                    <span><i class="fas fa-terminal"></i> 命令以 / 开头</span>
+                    <span><i class="fas fa-markdown"></i> 支持Markdown</span>
+                    <span><i class="fas fa-plug"></i> WebSocket直连</span>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <template id="message-template">
+        <div class="message user-message">
+            <div class="message-avatar">
+                <i class="fas fa-user"></i>
+            </div>
+            <div class="message-content">
+                <div class="message-header">
+                    <span class="message-sender">用户</span>
+                    <span class="message-time"></span>
+                </div>
+                <div class="message-text"></div>
+            </div>
+        </div>
+    </template>
+    
+    <template id="ai-message-template">
+        <div class="message ai-message">
+            <div class="message-avatar">
+                <i class="fas fa-robot"></i>
+            </div>
+            <div class="message-content">
+                <div class="message-header">
+                    <span class="message-sender">AI助手</span>
+                    <span class="message-time"></span>
+                </div>
+                <div class="message-text markdown-body"></div>
+            </div>
+        </div>
+    </template>
+    
+    <template id="task-message-template">
+        <div class="message task-message">
+            <div class="message-avatar">
+                <i class="fas fa-tasks"></i>
+            </div>
+            <div class="message-content">
+                <div class="message-header">
+                    <span class="message-sender">定时任务</span>
+                    <span class="message-time"></span>
+                    <span class="task-execution-count"></span>
+                </div>
+                <div class="message-text markdown-body"></div>
+            </div>
+        </div>
+    </template>
+    
+    <template id="task-separator-template">
+        <div class="task-separator">
+            <i class="fas fa-bolt"></i>
+            <span class="task-title">定时任务执行</span>
+            <span class="task-id" id="task-id-display"></span>
+        </div>
+    </template>
+    
+    <template id="multiple-tasks-info-template">
+        <div class="multiple-tasks-info">
+            <i class="fas fa-tasks"></i>
+            <span>多个定时任务正在同时执行，每个任务独立显示</span>
+        </div>
+    </template>
+    
+    <template id="system-message-template">
+        <div class="message system-message">
+            <div class="message-avatar">
+                <i class="fas fa-info-circle"></i>
+            </div>
+            <div class="message-content">
+                <div class="message-header">
+                    <span class="message-sender">系统</span>
+                    <span class="message-time"></span>
+                </div>
+                <div class="message-text"></div>
+            </div>
+        </div>
+    </template>
+    
+    <template id="error-message-template">
+        <div class="message error-message">
+            <div class="message-avatar">
+                <i class="fas fa-exclamation-triangle"></i>
+            </div>
+            <div class="message-content">
+                <div class="message-header">
+                    <span class="message-sender">错误</span>
+                    <span class="message-time"></span>
+                </div>
+                <div class="message-text"></div>
+            </div>
+        </div>
+    </template>
+    
+    <template id="dialogue-ended-message-template">
+        <div class="message system-message dialogue-ended">
+            <div class="message-avatar">
+                <i class="fas fa-check-circle"></i>
+            </div>
+            <div class="message-content">
+                <div class="message-header">
+                    <span class="message-sender">系统</span>
+                    <span class="message-time"></span>
+                </div>
+                <div class="message-text" style="color: #4CAF50; font-weight: bold;">对话已结束，可以开始新对话</div>
+            </div>
+        </div>
+    </template>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 配置marked
+            marked.setOptions({
+                highlight: function(code, lang) {
+                    if (lang && hljs.getLanguage(lang)) {
+                        try {
+                            return hljs.highlight(code, { language: lang }).value;
+                        } catch (err) {
+                            console.error(err);
+                        }
+                    }
+                    return hljs.highlightAuto(code).value;
+                },
+                breaks: true,
+                gfm: true,
+                headerIds: false,
+                mangle: false
+            });
+            
+            // ==================== 流式消息管理 ====================
+            let streamingMessages = {
+                chat: {
+                    element: null,
+                    content: '',
+                    timer: null,
+                    lastUpdateTime: 0,
+                    isActive: false
+                },
+                tasks: {}
+            };
+            
+            let activeTaskCount = 0;
+            let messageCount = 0;
+            let toolCallCount = 0;
+            const UPDATE_INTERVAL = 50;
+            
+            // 清除流式消息
+            function clearStreamingMessage(type = 'chat', executionId = null) {
+                if (type === 'chat') {
+                    if (streamingMessages.chat.element) {
+                        streamingMessages.chat.element.classList.remove('streaming');
+                    }
+                    if (streamingMessages.chat.timer) {
+                        clearTimeout(streamingMessages.chat.timer);
+                    }
+                    streamingMessages.chat = {
+                        element: null,
+                        content: '',
+                        timer: null,
+                        lastUpdateTime: 0,
+                        isActive: false
+                    };
+                } else if (type === 'task' && executionId) {
+                    const taskStream = streamingMessages.tasks[executionId];
+                    if (taskStream && taskStream.element) {
+                        taskStream.element.classList.remove('streaming');
+                    }
+                    if (taskStream && taskStream.timer) {
+                        clearTimeout(taskStream.timer);
+                    }
+                    delete streamingMessages.tasks[executionId];
+                    activeTaskCount--;
+                    if (activeTaskCount < 0) activeTaskCount = 0;
+                    
+                    const taskCountSpan = document.getElementById('task-count');
+                    if (taskCountSpan) {
+                        taskCountSpan.textContent = activeTaskCount;
+                    }
+                }
+            }
+            
+            // 清除所有流式消息
+            function clearAllStreamingMessages() {
+                clearStreamingMessage('chat');
+                Object.keys(streamingMessages.tasks).forEach(execId => {
+                    clearStreamingMessage('task', execId);
+                });
+            }
+            
+            // 更新流式显示
+            function updateStreamingDisplay(type = 'chat', executionId = null) {
+                let streamData;
+                
+                if (type === 'chat') {
+                    streamData = streamingMessages.chat;
+                } else if (type === 'task' && executionId) {
+                    streamData = streamingMessages.tasks[executionId];
+                }
+                
+                if (!streamData || !streamData.element) return;
+                
+                const textDiv = streamData.element.querySelector('.message-text');
+                if (!textDiv) return;
+                
+                textDiv.setAttribute('data-raw-content', streamData.content);
+                
+                if (markdownEnabled) {
+                    textDiv.innerHTML = marked.parse(streamData.content);
+                    textDiv.querySelectorAll('pre code').forEach((block) => {
+                        hljs.highlightElement(block);
+                    });
+                    addCopyButtonsToCodeBlocks(textDiv);
+                } else {
+                    textDiv.textContent = streamData.content;
+                }
+                
+                const container = document.getElementById('messages-container');
+                container.scrollTop = container.scrollHeight;
+                
+                streamData.lastUpdateTime = Date.now();
+                streamData.timer = null;
+            }
+            
+            // 处理流式chunk
+            function handleStreamChunk(content, type = 'chat', taskInfo = null) {
+                let streamData;
+                
+                if (type === 'chat') {
+                    streamData = streamingMessages.chat;
+                    
+                    if (!streamData.element) {
+                        const container = document.getElementById('messages-container');
+                        const template = document.getElementById('ai-message-template');
+                        const clone = template.content.cloneNode(true);
+                        
+                        streamData.element = clone.querySelector('.message');
+                        streamData.element.classList.add('streaming');
+                        streamData.isActive = true;
+                        
+                        const timeSpan = streamData.element.querySelector('.message-time');
+                        timeSpan.textContent = new Date().toLocaleTimeString('zh-CN', { 
+                            hour: '2-digit', 
+                            minute: '2-digit', 
+                            second: '2-digit' 
+                        });
+                        
+                        container.appendChild(clone);
+                        const textDiv = streamData.element.querySelector('.message-text');
+                        textDiv.setAttribute('data-raw-content', '');
+                        
+                        streamData.lastUpdateTime = Date.now();
+                    }
+                    
+                    streamData.content += content;
+                } 
+                else if (type === 'task' && taskInfo && taskInfo.executionId) {
+                    const executionId = taskInfo.executionId;
+                    
+                    let triggerCount = 1;
+                    if (executionId) {
+                        const parts = executionId.split('_');
+                        if (parts.length >= 3) {
+                            triggerCount = parseInt(parts[2]) || 1;
+                        }
+                    }
+                    
+                    if (!streamingMessages.tasks[executionId]) {
+                        streamingMessages.tasks[executionId] = {
+                            element: null,
+                            content: '',
+                            timer: null,
+                            lastUpdateTime: 0,
+                            taskId: taskInfo.taskId,
+                            executionId: executionId,
+                            taskTitle: taskInfo.taskTitle || '未知任务',
+                            triggerCount: triggerCount,
+                            isActive: true
+                        };
+                        
+                        activeTaskCount++;
+                        const taskCountSpan = document.getElementById('task-count');
+                        if (taskCountSpan) {
+                            taskCountSpan.textContent = activeTaskCount;
+                        }
+                        
+                        const container = document.getElementById('messages-container');
+                        
+                        const separatorTemplate = document.getElementById('task-separator-template');
+                        const separatorClone = separatorTemplate.content.cloneNode(true);
+                        const taskIdSpan = separatorClone.querySelector('#task-id-display');
+                        if (taskIdSpan) {
+                            taskIdSpan.textContent = `任务 #${taskInfo.taskId} - ${streamingMessages.tasks[executionId].taskTitle} (第${triggerCount}次执行)`;
+                        }
+                        container.appendChild(separatorClone);
+                        
+                        const template = document.getElementById('task-message-template');
+                        const clone = template.content.cloneNode(true);
+                        
+                        const element = clone.querySelector('.message');
+                        element.classList.add('streaming');
+                        element.setAttribute('data-execution-id', executionId);
+                        
+                        const timeSpan = element.querySelector('.message-time');
+                        timeSpan.textContent = new Date().toLocaleTimeString('zh-CN', { 
+                            hour: '2-digit', 
+                            minute: '2-digit', 
+                            second: '2-digit' 
+                        });
+                        
+                        const senderSpan = element.querySelector('.message-sender');
+                        if (senderSpan) {
+                            senderSpan.textContent = `定时任务 #${taskInfo.taskId}`;
+                        }
+                        
+                        const countSpan = element.querySelector('.task-execution-count');
+                        if (countSpan) {
+                            countSpan.textContent = `第${triggerCount}次执行`;
+                        }
+                        
+                        container.appendChild(clone);
+                        streamingMessages.tasks[executionId].element = element;
+                        
+                        const textDiv = element.querySelector('.message-text');
+                        textDiv.setAttribute('data-raw-content', '');
+                        streamingMessages.tasks[executionId].lastUpdateTime = Date.now();
+                        
+                        container.scrollTop = container.scrollHeight;
+                    }
+                    
+                    streamData = streamingMessages.tasks[executionId];
+                    streamData.content += content;
+                }
+                
+                if (streamData) {
+                    const now = Date.now();
+                    if (now - streamData.lastUpdateTime >= UPDATE_INTERVAL) {
+                        if (streamData.timer) {
+                            clearTimeout(streamData.timer);
+                            streamData.timer = null;
+                        }
+                        updateStreamingDisplay(type, taskInfo?.executionId);
+                    } else if (!streamData.timer) {
+                        streamData.timer = setTimeout(
+                            () => updateStreamingDisplay(type, taskInfo?.executionId), 
+                            UPDATE_INTERVAL - (now - streamData.lastUpdateTime)
+                        );
+                    }
+                }
+            }
+            
+            // 完成流式消息
+            function completeStreamMessage(type = null, executionId = null) {
+                if (type === 'chat') {
+                    const streamData = streamingMessages.chat;
+                    if (streamData && streamData.element) {
+                        if (streamData.timer) {
+                            clearTimeout(streamData.timer);
+                        }
+                        updateStreamingDisplay('chat');
+                        streamData.element.classList.remove('streaming');
+                        
+                        messageCount++;
+                        const countSpan = document.getElementById('message-count');
+                        if (countSpan) {
+                            countSpan.textContent = messageCount;
+                        }
+                        
+                        const messageText = streamData.element.querySelector('.message-text');
+                        addCopyButtonsToCodeBlocks(messageText);
+                        streamData.isActive = false;
+                    }
+                    clearStreamingMessage('chat');
+                } else if (type === 'task' && executionId) {
+                    const streamData = streamingMessages.tasks[executionId];
+                    if (streamData && streamData.element) {
+                        if (streamData.timer) {
+                            clearTimeout(streamData.timer);
+                        }
+                        updateStreamingDisplay('task', executionId);
+                        streamData.element.classList.remove('streaming');
+                        
+                        messageCount++;
+                        const countSpan = document.getElementById('message-count');
+                        if (countSpan) {
+                            countSpan.textContent = messageCount;
+                        }
+                        
+                        const messageText = streamData.element.querySelector('.message-text');
+                        addCopyButtonsToCodeBlocks(messageText);
+                    }
+                    clearStreamingMessage('task', executionId);
+                }
+            }
+            
+            // 为代码块添加复制按钮
+            function addCopyButtonsToCodeBlocks(container) {
+                if (!container) return;
+                
+                const codeBlocks = container.querySelectorAll('pre');
+                codeBlocks.forEach((block) => {
+                    if (block.parentNode.classList.contains('code-block-wrapper')) return;
+                    
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'code-block-wrapper';
+                    wrapper.style.position = 'relative';
+                    
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'copy-code-btn';
+                    copyBtn.innerHTML = '<i class="fas fa-copy"></i> 复制';
+                    copyBtn.onclick = function() {
+                        const code = block.querySelector('code')?.innerText || block.innerText;
+                        navigator.clipboard.writeText(code).then(() => {
+                            copyBtn.innerHTML = '<i class="fas fa-check"></i> 已复制';
+                            setTimeout(() => {
+                                copyBtn.innerHTML = '<i class="fas fa-copy"></i> 复制';
+                            }, 2000);
+                        });
+                    };
+                    
+                    block.parentNode.insertBefore(wrapper, block);
+                    wrapper.appendChild(block);
+                    wrapper.appendChild(copyBtn);
+                });
+            }
+            
+            // 显示系统消息
+            function showSystemMessage(message, type = 'info') {
+                const templateId = type === 'error' ? 'error-message-template' : 'system-message-template';
+                const template = document.getElementById(templateId);
+                const clone = template.content.cloneNode(true);
+                const messageText = clone.querySelector('.message-text');
+                const timeSpan = clone.querySelector('.message-time');
+                
+                timeSpan.textContent = new Date().toLocaleTimeString('zh-CN', { 
+                    hour: '2-digit', 
+                    minute: '2-digit', 
+                    second: '2-digit' 
+                });
+                messageText.textContent = message;
+                
+                document.getElementById('messages-container').appendChild(clone);
+                document.getElementById('messages-container').scrollTop = 
+                    document.getElementById('messages-container').scrollHeight;
+            }
+            
+            // 处理对话结束
+            function handleDialogueEnded() {
+                console.log('对话结束信号收到，重置聊天流式状态');
+                
+                const template = document.getElementById('dialogue-ended-message-template');
+                if (template) {
+                    const clone = template.content.cloneNode(true);
+                    const timeSpan = clone.querySelector('.message-time');
+                    timeSpan.textContent = new Date().toLocaleTimeString('zh-CN', { 
+                        hour: '2-digit', 
+                        minute: '2-digit', 
+                        second: '2-digit' 
+                    });
+                    document.getElementById('messages-container').appendChild(clone);
+                }
+                
+                if (streamingMessages.chat.element) {
+                    streamingMessages.chat.element.classList.remove('streaming');
+                    streamingMessages.chat.element = null;
+                }
+                if (streamingMessages.chat.timer) {
+                    clearTimeout(streamingMessages.chat.timer);
+                }
+                
+                streamingMessages.chat = {
+                    element: null,
+                    content: '',
+                    timer: null,
+                    lastUpdateTime: 0,
+                    isActive: false
+                };
+                
+                document.getElementById('messages-container').scrollTop = 
+                    document.getElementById('messages-container').scrollHeight;
+            }
+            
+            // Markdown切换
+            let markdownEnabled = true;
+            const markdownToggle = document.getElementById('markdown-toggle');
+            
+            if (markdownToggle) {
+                markdownToggle.addEventListener('click', function() {
+                    markdownEnabled = !markdownEnabled;
+                    this.classList.toggle('active', markdownEnabled);
+                    
+                    const allMessages = document.querySelectorAll('.ai-message .message-text, .task-message .message-text');
+                    allMessages.forEach(msgDiv => {
+                        const rawContent = msgDiv.getAttribute('data-raw-content');
+                        if (rawContent) {
+                            if (markdownEnabled) {
+                                msgDiv.innerHTML = marked.parse(rawContent);
+                                msgDiv.classList.add('markdown-body');
+                                addCopyButtonsToCodeBlocks(msgDiv);
+                            } else {
+                                msgDiv.textContent = rawContent;
+                                msgDiv.classList.remove('markdown-body');
+                            }
+                        }
+                    });
+                    
+                    showSystemMessage(`Markdown预览已${markdownEnabled ? '开启' : '关闭'}`);
+                });
+            }
+            
+            // ==================== WebSocket 直连管理 ====================
+            let ws = null;
+            let reconnectAttempts = 0;
+            const MAX_RECONNECT_ATTEMPTS = 5;
+            let manualDisconnect = false;
+            
+            function connectWebSocket() {
+                const wsUrl = document.getElementById('ws-url').value.trim();
+                if (!wsUrl) {
+                    showSystemMessage('请输入 WebSocket 地址', 'error');
+                    return null;
+                }
+                
+                // 验证地址格式
+                if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
+                    showSystemMessage('WebSocket地址必须以 ws:// 或 wss:// 开头', 'error');
+                    return null;
+                }
+                
+                console.log(`连接 WebSocket: ${wsUrl}`);
+                manualDisconnect = false;
+                
+                const webSocket = new WebSocket(wsUrl);
+                
+                webSocket.onopen = () => {
+                    console.log('WebSocket 连接成功');
+                    reconnectAttempts = 0;
+                    updateConnectionStatus(true);
+                    showSystemMessage(`✅ WebSocket 连接成功！服务器: ${wsUrl}`);
+                };
+                
+                webSocket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleWebSocketMessage(data);
+                    } catch (err) {
+                        // 如果不是 JSON，当作普通文本处理
+                        console.log('收到非JSON消息:', event.data);
+                        handleStreamChunk(event.data, 'chat');
+                    }
+                };
+                
+                webSocket.onerror = (error) => {
+                    console.error('WebSocket 错误:', error);
+                    showSystemMessage(`❌ WebSocket 错误`, 'error');
+                };
+                
+                webSocket.onclose = (event) => {
+                    console.log('WebSocket 断开连接:', event.code, event.reason);
+                    updateConnectionStatus(false);
+                    
+                    if (!manualDisconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                        reconnectAttempts++;
+                        showSystemMessage(`⚠️ 连接断开，${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} 秒后重试...`);
+                        setTimeout(() => {
+                            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                                console.log('尝试重连...');
+                                ws = connectWebSocket();
+                            }
+                        }, 3000 * reconnectAttempts);
+                    } else if (!manualDisconnect) {
+                        showSystemMessage('❌ 连接断开，请手动重连', 'error');
+                    } else {
+                        showSystemMessage('已手动断开连接');
+                    }
+                    
+                    clearAllStreamingMessages();
+                };
+                
+                return webSocket;
+            }
+            
+            function handleWebSocketMessage(data) {
+                const type = data.type;
+                const content = data.content;
+                
+                if (type === 'chunk') {
+                    handleStreamChunk(content, 'chat');
+                } else if (type === 'complete') {
+                    completeStreamMessage('chat');
+                } else if (type === 'dialogue_ended') {
+                    handleDialogueEnded();
+                } else if (type === 'task_process') {
+                    const msgType = data.msg_type;
+                    const taskContent = data.content;
+                    const taskId = data.task_id;
+                    const executionId = data.execution_id;
+                    const taskTitle = data.task_title;
+                    
+                    if (msgType === 'chunk') {
+                        handleStreamChunk(taskContent, 'task', { taskId, executionId, taskTitle });
+                    } else if (msgType === 'complete') {
+                        completeStreamMessage('task', executionId);
+                    }
+                } else if (type === 'task_status') {
+                    const taskId = data.task_id;
+                    const title = data.title;
+                    const status = data.status;
+                    const message = data.message || content;
+                    
+                    let statusIcon = '📋';
+                    if (status === 'executing') statusIcon = '⚙️';
+                    else if (status === 'complete') statusIcon = '✅';
+                    else if (status === 'failed') statusIcon = '❌';
+                    else if (status === 'added') statusIcon = '➕';
+                    else if (status === 'batch_start') statusIcon = '🚀';
+                    else if (status === 'batch_complete') statusIcon = '🏁';
+                    
+                    showSystemMessage(`${statusIcon} [任务 ${taskId}] ${title}: ${message}`);
+                } else if (type === 'task_error') {
+                    const taskId = data.task_id;
+                    const executionId = data.execution_id;
+                    const taskTitle = data.task_title;
+                    const error = data.error;
+                    
+                    showSystemMessage(`❌ [任务 ${taskId}] ${taskTitle}: ${error}`, 'error');
+                    
+                    if (executionId) {
+                        completeStreamMessage('task', executionId);
+                    }
+                } else if (type === 'error') {
+                    showSystemMessage(content, 'error');
+                } else if (type === 'info') {
+                    showSystemMessage('ℹ️ ' + content);
+                } else if (type === 'command_result') {
+                    showSystemMessage('📋 ' + content);
+                } else if (type === 'connection_ack') {
+                    showSystemMessage('✅ ' + content);
+                } else if (type === 'notification') {
+                    showSystemMessage('🔔 ' + content);
+                } else {
+                    if (content) {
+                        handleStreamChunk(content, 'chat');
+                    }
+                }
+            }
+            
+            function updateConnectionStatus(connected) {
+                const statusDot = document.querySelector('.status-dot');
+                const statusText = document.querySelector('.status-text');
+                const connectBtn = document.getElementById('connect-btn');
+                const disconnectBtn = document.getElementById('disconnect-btn');
+                const messageInput = document.getElementById('message-input');
+                const sendBtn = document.getElementById('send-btn');
+                const statsPanel = document.getElementById('stats-panel');
+                
+                if (connected) {
+                    statusDot.className = 'status-dot connected';
+                    statusText.textContent = '已连接 (WebSocket)';
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                    messageInput.disabled = false;
+                    sendBtn.disabled = false;
+                    statsPanel.style.display = 'block';
+                    
+                    const now = new Date();
+                    document.getElementById('connect-time').textContent = now.toLocaleTimeString();
+                } else {
+                    statusDot.className = 'status-dot disconnected';
+                    statusText.textContent = '未连接';
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    messageInput.disabled = true;
+                    sendBtn.disabled = true;
+                    statsPanel.style.display = 'none';
+                }
+            }
+            
+            function sendMessage() {
+                const input = document.getElementById('message-input');
+                const message = input.value.trim();
+                
+                if (!message || !ws || ws.readyState !== WebSocket.OPEN) {
+                    if (!ws || ws.readyState !== WebSocket.OPEN) {
+                        showSystemMessage('❌ 未连接到服务器，请先连接', 'error');
+                    }
+                    return;
+                }
+                
+                input.value = '';
+                input.style.height = 'auto';
+                
+                const timestamp = new Date().toLocaleTimeString('zh-CN', { 
+                    hour: '2-digit', 
+                    minute: '2-digit', 
+                    second: '2-digit' 
+                });
+                
+                const template = document.getElementById('message-template');
+                const clone = template.content.cloneNode(true);
+                const messageText = clone.querySelector('.message-text');
+                const timeSpan = clone.querySelector('.message-time');
+                
+                timeSpan.textContent = timestamp;
+                messageText.textContent = message;
+                
+                document.getElementById('messages-container').appendChild(clone);
+                document.getElementById('messages-container').scrollTop = 
+                    document.getElementById('messages-container').scrollHeight;
+                
+                // 发送消息到服务器 - 根据消息格式判断类型
+                let sendData;
+                if (message.startsWith('/')) {
+                    sendData = {
+                        type: 'command',
+                        command: message
+                    };
+                } else {
+                    sendData = {
+                        type: 'message',
+                        content: message
+                    };
+                }
+                
+                try {
+                    ws.send(JSON.stringify(sendData));
+                    console.log('消息已发送:', sendData);
+                } catch (e) {
+                    console.error('发送消息失败:', e);
+                    showSystemMessage('❌ 发送消息失败: ' + e.message, 'error');
+                }
+            }
+            
+            // 事件绑定
+            document.getElementById('connect-btn').addEventListener('click', function() {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                }
+                reconnectAttempts = 0;
+                manualDisconnect = false;
+                ws = connectWebSocket();
+            });
+            
+            document.getElementById('disconnect-btn').addEventListener('click', function() {
+                manualDisconnect = true;
+                if (ws) {
+                    ws.close();
+                    ws = null;
+                }
+                reconnectAttempts = MAX_RECONNECT_ATTEMPTS;
+                updateConnectionStatus(false);
+                showSystemMessage('已手动断开连接');
+            });
+            
+            document.getElementById('send-btn').addEventListener('click', sendMessage);
+            
+            document.getElementById('message-input').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+            
+            document.getElementById('message-input').addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = (this.scrollHeight) + 'px';
+            });
+            
+            document.querySelectorAll('.command-item').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const command = this.dataset.command;
+                    document.getElementById('message-input').value = command + ' ';
+                    document.getElementById('message-input').focus();
+                });
+            });
+            
+            document.getElementById('clear-chat-btn').addEventListener('click', function() {
+                const container = document.getElementById('messages-container');
+                container.innerHTML = '';
+                
+                const welcomeHtml = document.querySelector('.welcome-message').cloneNode(true);
+                container.appendChild(welcomeHtml);
+                
+                clearAllStreamingMessages();
+                messageCount = 0;
+                toolCallCount = 0;
+                const countSpan = document.getElementById('message-count');
+                if (countSpan) countSpan.textContent = '0';
+                const toolSpan = document.getElementById('tool-count');
+                if (toolSpan) toolSpan.textContent = '0';
+            });
+            
+            document.getElementById('scroll-bottom-btn').addEventListener('click', function() {
+                const container = document.getElementById('messages-container');
+                container.scrollTop = container.scrollHeight;
+            });
+            
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    const type = this.dataset.type;
+                    const input = document.getElementById('message-input');
+                    
+                    if (type === 'command') {
+                        if (!input.value.startsWith('/') && input.value.trim()) {
+                            input.value = '/' + input.value;
+                        }
+                    }
+                });
+            });
+            
+            // 保存原始内容用于Markdown切换
+            function preserveRawContent() {
+                document.querySelectorAll('.ai-message .message-text, .task-message .message-text').forEach(msgDiv => {
+                    if (!msgDiv.getAttribute('data-raw-content')) {
+                        msgDiv.setAttribute('data-raw-content', msgDiv.textContent);
+                    }
+                });
+            }
+            
+            const observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    mutation.addedNodes.forEach(function(node) {
+                        if (node.nodeType === 1) {
+                            if (node.classList && (node.classList.contains('ai-message') || node.classList.contains('task-message'))) {
+                                const textDiv = node.querySelector('.message-text');
+                                if (textDiv && !textDiv.getAttribute('data-raw-content')) {
+                                    textDiv.setAttribute('data-raw-content', textDiv.textContent);
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+            
+            observer.observe(document.getElementById('messages-container'), {
+                childList: true,
+                subtree: true
+            });
+        });
+    </script>
+</body>
+</html>
