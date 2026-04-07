@@ -3800,137 +3800,294 @@ class ToolRegistry:
 
 
 # ==================== 扩展工具类 ====================
+# ==================== 扩展工具类（修改版：添加技能模板生成功能） ====================
+
+# ==================== 扩展工具类（修改版：添加技能模板生成功能） ====================
+# ==================== 扩展工具类（修复版：支持嵌套JSON参数） ====================
 
 class ExtensionTool(Tool):
     """扩展工具类 - 动态加载外部技能（支持流式输出）"""
     
+    # 技能模板内容 - 支持嵌套JSON参数
+    SKILL_TEMPLATE = '''#!/usr/bin/env python3
+"""
+扩展技能: {skill_name}
+描述: {description}
+
+这是一个标准的扩展技能模板，实现了必需的三个接口：
+--description : 返回技能描述
+--parameters  : 返回参数定义（JSON Schema格式）
+--execute     : 执行技能逻辑
+"""
+
+import json
+import sys
+import argparse
+from datetime import datetime
+
+
+def get_description():
+    """返回技能描述"""
+    return \"\"\"{description}\"\"\"
+
+
+def get_parameters():
+    """返回参数定义（JSON Schema格式）"""
+    return {
+        "type": "object",
+        "properties": {
+            "param1": {
+                "type": "string",
+                "description": "参数1的描述"
+            },
+            "param2": {
+                "type": "integer",
+                "description": "参数2的描述",
+                "default": 0
+            }
+        },
+        "required": ["param1"]
+    }
+
+
+def parse_args(args_str):
+    """
+    解析参数，支持两种格式：
+    1. 标准JSON格式：{{"param1": "value1", "param2": 123}}
+    2. 系统工具嵌套格式：{{"args": "{{\\"param1\\": \\"value1\\", \\"param2\\": 123}}"}}
+    
+    这个函数专门用于测试JSON嵌套解析功能
+    """
+    try:
+        # 首先尝试直接解析
+        parsed = json.loads(args_str)
+        
+        # 输出调试信息
+        print(f"[DEBUG] 原始参数: {{args_str}}", file=sys.stderr)
+        print(f"[DEBUG] 解析后类型: {{type(parsed).__name__}}", file=sys.stderr)
+        print(f"[DEBUG] 解析后内容: {{parsed}}", file=sys.stderr)
+        
+        # 检查是否是系统工具传递的嵌套格式
+        if isinstance(parsed, dict) and "args" in parsed:
+            print(f"[DEBUG] 检测到系统工具嵌套格式", file=sys.stderr)
+            # 系统工具格式，需要再次解析args字段
+            try:
+                nested_args = json.loads(parsed["args"])
+                print(f"[DEBUG] 嵌套参数解析成功: {{nested_args}}", file=sys.stderr)
+                return nested_args
+            except json.JSONDecodeError:
+                # 如果args不是JSON字符串，直接返回args的值
+                print(f"[DEBUG] args字段不是JSON，直接返回: {{parsed['args']}}", file=sys.stderr)
+                return {{"param1": parsed["args"]}}
+        
+        print(f"[DEBUG] 标准JSON格式，直接返回", file=sys.stderr)
+        return parsed
+    except json.JSONDecodeError as e:
+        # 如果解析失败，返回默认参数
+        print(f"[DEBUG] 参数解析错误: {{e}}", file=sys.stderr)
+        return {{"param1": "默认参数", "param2": 999}}
+
+
+def execute(**kwargs):
+    """
+    执行技能逻辑
+    
+    参数:
+        **kwargs: 根据 get_parameters 定义的参数
+    
+    返回:
+        str: 执行结果
+    """
+    # 在这里实现技能的具体逻辑
+    param1 = kwargs.get("param1", "")
+    param2 = kwargs.get("param2", 0)
+    
+    result = f"{skill_name}技能执行成功！\\n"
+    result += f"参数1: {{param1}}\\n"
+    result += f"参数2: {{param2}}\\n"
+    result += f"执行时间: {{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}}\\n"
+    result += "技能说明: {description}\\n"
+    result += f"支持的参数格式:\\n"
+    result += f"  1. 标准JSON格式: {{\\"param1\\": \\"value1\\", \\"param2\\": 123}}\\n"
+    result += f"  2. 系统工具嵌套格式: {{\\"args\\": \\"{{\\\\\\"param1\\\\\\": \\\\\\"value1\\\\\\", \\\\\\"param2\\\\\\": 123}}\\"}}\\n"
+    
+    return result
+
+
+def main():
+    """命令行接口 - 必须实现 --description, --parameters, --execute"""
+    parser = argparse.ArgumentParser(description='扩展技能: {skill_name}')
+    parser.add_argument('--description', action='store_true', help='返回技能描述')
+    parser.add_argument('--parameters', action='store_true', help='返回参数定义（JSON格式）')
+    parser.add_argument('--execute', action='store_true', help='执行技能')
+    parser.add_argument('--args', type=str, default='{{}}', help='执行参数（JSON格式）')
+    
+    args = parser.parse_args()
+    
+    if args.description:
+        print(get_description())
+    elif args.parameters:
+        print(json.dumps(get_parameters(), ensure_ascii=False))
+    elif args.execute:
+        try:
+            # 使用参数解析函数，支持嵌套JSON
+            kwargs = parse_args(args.args)
+            result = execute(**kwargs)
+            print(result)
+        except Exception as e:
+            print(f"执行错误: {{e}}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
+'''
+
     def __init__(self, skill_file: str, logger: Optional[Logger] = None):
         super().__init__(logger)
         self.skill_file = skill_file
         self.skill_path = os.path.join(constants.SKILLS_DIR, skill_file)
-        self._name = os.path.splitext(skill_file)[0]  # 去掉扩展名作为工具名
+        self._name = os.path.splitext(skill_file)[0]
         self._description = self._get_description()
         self._parameters = self._get_parameters()
     
-    def _run_skill_command(self, command: str) -> str:
-        """运行技能命令并返回输出"""
-        try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=os.environ.copy()
-            )
-            return result.stdout.strip()
-        except Exception as e:
-            self.logger.error(f"运行技能命令失败: {e}")
-            return f"Error: {str(e)}"
-    
-    def _get_description(self) -> str:
-        """获取技能描述"""
-        # 执行文件并传入 --description 参数
-        cmd = f"{self.skill_path} --description"
-        return self._run_skill_command(cmd)
+    # ... 其余方法保持不变 ...
 
-    def _get_parameters(self) -> Dict:
-        """获取技能参数定义（JSON Schema格式）"""
-        # 执行文件并传入 --parameters 参数
-        cmd = f"{self.skill_path} --parameters"
-        output = self._run_skill_command(cmd)
-        
-        try:
-            # 尝试解析JSON
-            return json.loads(output)
-        except json.JSONDecodeError:
-            # 如果解析失败，返回一个默认的参数结构
-            self.logger.warning(f"技能 {self._name} 的参数返回不是有效的JSON")
-            return {
-                "type": "object",
-                "properties": {
-                    "args": {
-                        "type": "string",
-                        "description": "传递给技能的命令行参数（JSON格式）"
-                    }
-                },
-                "required": ["args"]
-            }
+
+# ==================== 创建扩展技能工具（使用字符串替换） ====================
+
+class CreateSkillTool(Tool):
+    """创建扩展技能工具 - 生成标准格式的技能脚本（支持嵌套JSON）"""
+    
+    def __init__(self, logger: Optional[Logger] = None):
+        super().__init__(logger)
+        self.skills_dir = constants.SKILLS_DIR
     
     def get_name(self) -> str:
-        return self._name
+        return "create_skill"
     
     def get_description(self) -> str:
-        return self._description
-    
+        return """创建扩展技能 - 生成一个符合标准格式的技能脚本
+
+【技能脚本标准格式说明】
+扩展技能必须实现以下三个命令行接口：
+
+1. --description : 返回技能描述
+   - 输出格式: 纯文本字符串
+   - 示例: print("这是一个用于处理文本的技能")
+
+2. --parameters : 返回参数定义
+   - 输出格式: JSON Schema格式
+   - 示例: {"type": "object", "properties": {...}, "required": [...]}
+
+3. --execute : 执行技能逻辑
+   - 配合 --args 参数传递JSON格式的参数
+   - 支持嵌套JSON格式: {"args": "{\"param1\": \"value1\"}"}
+
+技能文件保存到: ~/.aibox/skills/ 目录下
+创建后需要使用 reload_skills 工具重新加载才能生效"""
+
     def get_parameters(self) -> Dict:
-        return self._parameters
+        return {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "技能名称（不含扩展名），将作为文件名和工具名"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "技能描述，说明这个技能的功能"
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "是否覆盖已存在的技能文件",
+                    "default": False
+                }
+            },
+            "required": ["skill_name", "description"]
+        }
     
-    def execute(self, **kwargs) -> str:
-        """执行技能（非流式）"""
-        # 将kwargs转换为JSON字符串
-        args_json = json.dumps(kwargs, ensure_ascii=False)
+    def execute(self, skill_name: str = None, description: str = None, 
+                overwrite: bool = False, **kwargs) -> str:
+        """创建扩展技能 - 使用字符串替换避免花括号转义问题"""
+        if not skill_name:
+            return "❌ 需要提供技能名称 (skill_name)"
         
-        # 执行文件并传入 --execute 和 --args 参数
-        cmd = f"{self.skill_path} --execute --args '{args_json}'"
-        print('执行扩展工具，参数：',cmd)
-        return self._run_skill_command(cmd)
-    
-    def execute_streaming(self, output_queue: queue.Queue, **kwargs):
-        """流式执行技能 - 实时输出到WebSocket"""
-        args_json = json.dumps(kwargs, ensure_ascii=False)
-        cmd = f"{self.skill_path} --execute --args '{args_json}'"
+        if not description:
+            return "❌ 需要提供技能描述 (description)"
         
-        # 发送开始执行的消息
-        output_queue.put(("line", f"\n🔧 执行扩展技能: {self._name}\n"))
-        output_queue.put(("line", "-" * 50 + "\n"))
+        # 清理技能名称（只允许字母、数字、下划线）
+        clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', skill_name)
+        if clean_name != skill_name:
+            self.logger.warning(f"技能名称已规范化: {skill_name} -> {clean_name}")
+            skill_name = clean_name
+        
+        # 确保技能目录存在
+        os.makedirs(self.skills_dir, exist_ok=True)
+        
+        # 技能文件路径
+        skill_path = os.path.join(self.skills_dir, f"{skill_name}.py")
+        
+        # 检查文件是否已存在
+        if os.path.exists(skill_path) and not overwrite:
+            return f"❌ 技能文件已存在: {skill_path}\n如需覆盖，请设置 overwrite=true"
         
         try:
-            # 使用subprocess.Popen实现流式输出
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # 合并stderr到stdout
-                text=True,
-                bufsize=1,  # 行缓冲
-                universal_newlines=True,
-                env=os.environ.copy()
-            )
+            # 使用简单的字符串替换，避免 format 的花括号问题
+            skill_content = ExtensionTool.SKILL_TEMPLATE
+            skill_content = skill_content.replace('{skill_name}', skill_name)
+            skill_content = skill_content.replace('{description}', description)
             
-            output_lines = []
+            with open(skill_path, 'w', encoding='utf-8') as f:
+                f.write(skill_content)
             
-            # 实时读取输出
-            while True:
-                # 读取一行输出
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    line = line.rstrip('\n')
-                    # 发送每一行到队列（会通过WebSocket发送）
-                    output_queue.put(("line", line + "\n"))
-                    output_lines.append(line)
+            # 设置可执行权限（Unix/Linux/Mac）
+            if sys.platform != 'win32':
+                try:
+                    # 添加执行权限
+                    current_stat = os.stat(skill_path)
+                    new_mode = current_stat.st_mode | 0o111
+                    os.chmod(skill_path, new_mode)
+                    permission_msg = f"✅ 已设置可执行权限 (chmod {oct(new_mode)[2:]})"
+                except Exception as e:
+                    self.logger.warning(f"设置可执行权限失败: {e}")
+                    permission_msg = f"⚠️ 无法设置可执行权限: {e}"
+            else:
+                permission_msg = "Windows系统无需设置执行权限"
             
-            # 等待进程结束
-            return_code = process.wait()
+            data = {
+                "技能名称": skill_name,
+                "文件路径": skill_path,
+                "技能描述": description[:100] + "..." if len(description) > 100 else description,
+                "权限状态": permission_msg,
+                "支持的参数格式": "标准JSON + 系统工具嵌套JSON"
+            }
             
-            # 发送执行完成信息
-            output_queue.put(("line", "-" * 50 + "\n"))
-            output_queue.put(("line", f"✅ 技能执行完成，返回码: {return_code}\n"))
+            result = self.format_result(True, f"扩展技能已创建: {skill_name}.py", data)
+            result += "\n\n📌 提示: 创建后请使用 reload_skills 工具重新加载技能才能生效"
+            result += "\n📌 技能支持两种参数传递格式:"
+            result += "\n   1. 标准JSON: --args '{\"param1\": \"value1\", \"param2\": 123}'"
+            result += "\n   2. 嵌套JSON: --args '{\"args\": \"{\\\"param1\\\": \\\"value1\\\"}\"}'"
             
-            # 准备完整结果
-            full_output = "\n".join(output_lines)
-            result = self.format_result(return_code == 0, "技能执行完成", {"输出": full_output})
-            
-            # 发送完整结果
-            output_queue.put(("complete", result))
+            return result
             
         except Exception as e:
-            error_msg = f"❌ 技能执行错误: {str(e)}"
-            output_queue.put(("line", error_msg + "\n"))
-            output_queue.put(("complete", error_msg))
-
+            return f"❌ 创建技能失败: {str(e)}"
+    
+    def execute_streaming(self, output_queue: queue.Queue, **kwargs):
+        """流式执行创建技能"""
+        skill_name = kwargs.get("skill_name")
+        
+        output_queue.put(("line", f"\n🔧 创建扩展技能: {skill_name}\n"))
+        output_queue.put(("line", "-" * 50 + "\n"))
+        
+        result = self.execute(**kwargs)
+        
+        output_queue.put(("line", result + "\n"))
+        output_queue.put(("complete", result))
 
 # ==================== 技能热重载工具 ====================
 
@@ -5976,6 +6133,7 @@ class DeepSeekChat:
             ListFilesTool(self.logger),
             SimpleWebCrawlerTool(self.logger),
         ]
+        builtin_tools.append(CreateSkillTool(self.logger))
         
         if self.memory_db:
             builtin_tools.append(MemoryTool(self.memory_db, self.logger))

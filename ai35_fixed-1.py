@@ -3800,7 +3800,6 @@ class ToolRegistry:
 
 
 # ==================== 扩展工具类 ====================
-
 class ExtensionTool(Tool):
     """扩展工具类 - 动态加载外部技能（支持流式输出）"""
     
@@ -3808,53 +3807,53 @@ class ExtensionTool(Tool):
         super().__init__(logger)
         self.skill_file = skill_file
         self.skill_path = os.path.join(constants.SKILLS_DIR, skill_file)
-        self._name = os.path.splitext(skill_file)[0]  # 去掉扩展名作为工具名
+        self._name = os.path.splitext(skill_file)[0]
         self._description = self._get_description()
         self._parameters = self._get_parameters()
     
-    def _run_skill_command(self, args: List[str]) -> str:
-        """运行技能命令并返回输出（安全版，不使用 shell）"""
+    def _run_skill_command(self, args: List[str], timeout: int = 30) -> Tuple[str, str]:
+        """运行技能命令，返回 (stdout, stderr)"""
         try:
+            self.logger.debug(f"执行命令: {args}")
             result = subprocess.run(
                 args,
-                shell=False,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=timeout,
                 env=os.environ.copy()
             )
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            if result.returncode != 0 and stderr:
-                return stderr
-            return stdout
+            return result.stdout.strip(), result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            return "", f"命令执行超时（{timeout}秒）"
         except Exception as e:
-            self.logger.error(f"运行技能命令失败: {e}")
-            return f"Error: {str(e)}"
+            return "", str(e)
     
     def _get_description(self) -> str:
-        """获取技能描述"""
-        return self._run_skill_command([sys.executable, self.skill_path, "--description"])
-
+        stdout, stderr = self._run_skill_command([sys.executable, self.skill_path, "--description"])
+        if stderr:
+            return f"技能描述获取失败: {stderr}"
+        return stdout if stdout else "无描述"
+    
     def _get_parameters(self) -> Dict:
-        """获取技能参数定义（JSON Schema格式）"""
-        output = self._run_skill_command([sys.executable, self.skill_path, "--parameters"])
-        
-        try:
-            # 尝试解析JSON
-            return json.loads(output)
-        except json.JSONDecodeError:
-            # 如果解析失败，返回一个默认的参数结构
-            self.logger.warning(f"技能 {self._name} 的参数返回不是有效的JSON")
+        stdout, stderr = self._run_skill_command([sys.executable, self.skill_path, "--parameters"])
+        if stderr:
+            self.logger.warning(f"获取参数失败: {stderr}")
             return {
                 "type": "object",
                 "properties": {
-                    "args": {
-                        "type": "string",
-                        "description": "传递给技能的命令行参数（JSON格式）"
-                    }
-                },
-                "required": ["args"]
+                    "message": {"type": "string", "description": "消息内容"},
+                    "repeat": {"type": "integer", "description": "重复次数"}
+                }
+            }
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError:
+            return {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "消息内容"},
+                    "repeat": {"type": "integer", "description": "重复次数"}
+                }
             }
     
     def get_name(self) -> str:
@@ -3867,70 +3866,111 @@ class ExtensionTool(Tool):
         return self._parameters
     
     def execute(self, **kwargs) -> str:
-        """执行技能（非流式）"""
-        # 将kwargs转换为JSON字符串
+        """执行技能 - 使用临时文件传递参数，彻底避免 shell 解析问题"""
+        import tempfile
+        
+        # 将参数写入临时文件
         args_json = json.dumps(kwargs, ensure_ascii=False)
         
-        # 执行文件并传入 --execute 和 --args 参数
-        cmd = f"{self.skill_path} --execute --args '{args_json}'"
-        print('执行扩展工具，参数：',cmd)
-        return self._run_skill_command(cmd)
-    
-    def execute_streaming(self, output_queue: queue.Queue, **kwargs):
-        """流式执行技能 - 实时输出到WebSocket"""
-        args_json = json.dumps(kwargs, ensure_ascii=False)
-        cmd = f"{self.skill_path} --execute --args '{args_json}'"
-        
-        # 发送开始执行的消息
-        output_queue.put(("line", f"\n🔧 执行扩展技能: {self._name}\n"))
-        output_queue.put(("line", "-" * 50 + "\n"))
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.json', delete=False) as f:
+            f.write(args_json)
+            temp_file = f.name
         
         try:
-            # 使用subprocess.Popen实现流式输出
+            # 通过文件路径传递参数
+            cmd_args = [sys.executable, self.skill_path, "--execute", "--args-file", temp_file]
+            self.logger.info(f"执行命令: {' '.join(cmd_args)}")
+            
+            stdout, stderr = self._run_skill_command(cmd_args)
+            
+            if stderr:
+                self.logger.error(f"技能错误: {stderr}")
+                return f"❌ 技能执行错误: {stderr}"
+            
+            if not stdout:
+                return "❌ 技能执行无输出"
+            
+            try:
+                data = json.loads(stdout)
+                if isinstance(data, dict):
+                    if data.get("success"):
+                        return self.format_result(True, data.get("message", "执行成功"), data.get("data"))
+                    else:
+                        return self.format_result(False, data.get("error", "执行失败"), data.get("data"))
+                return stdout
+            except json.JSONDecodeError as e:
+                self.logger.error(f"解析结果失败: {e}, 输出: {stdout[:200]}")
+                return stdout
+        finally:
+            # 清理临时文件
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
+    
+    def execute_streaming(self, output_queue: queue.Queue, **kwargs):
+        """流式执行技能 - 使用临时文件传递参数"""
+        import tempfile
+        
+        args_json = json.dumps(kwargs, ensure_ascii=False)
+        
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.json', delete=False) as f:
+            f.write(args_json)
+            temp_file = f.name
+        
+        try:
+            cmd_args = [sys.executable, self.skill_path, "--execute", "--args-file", temp_file]
+            
+            output_queue.put(("line", f"\n🔧 执行扩展技能: {self._name}\n"))
+            output_queue.put(("line", f"📝 命令: {' '.join(cmd_args)}\n"))
+            output_queue.put(("line", "-" * 50 + "\n"))
+            
             process = subprocess.Popen(
-                cmd,
-                shell=False,
+                cmd_args,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # 合并stderr到stdout
+                stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1,  # 行缓冲
+                bufsize=1,
                 universal_newlines=True,
                 env=os.environ.copy()
             )
             
+            # 读取stdout
             output_lines = []
-            
-            # 实时读取输出
             while True:
-                # 读取一行输出
                 line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break
                 if line:
                     line = line.rstrip('\n')
-                    # 发送每一行到队列（会通过WebSocket发送）
                     output_queue.put(("line", line + "\n"))
                     output_lines.append(line)
             
-            # 等待进程结束
+            # 读取stderr
+            stderr_output = process.stderr.read()
+            if stderr_output:
+                output_queue.put(("line", f"\n⚠️ 错误输出:\n{stderr_output}\n"))
+            
             return_code = process.wait()
-            
-            # 发送执行完成信息
             output_queue.put(("line", "-" * 50 + "\n"))
-            output_queue.put(("line", f"✅ 技能执行完成，返回码: {return_code}\n"))
             
-            # 准备完整结果
-            full_output = "\n".join(output_lines)
-            result = self.format_result(return_code == 0, "技能执行完成", {"输出": full_output})
-            
-            # 发送完整结果
-            output_queue.put(("complete", result))
-            
+            if return_code == 0:
+                output_queue.put(("line", f"✅ 技能执行完成\n"))
+                full_output = "\n".join(output_lines)
+                output_queue.put(("complete", full_output))
+            else:
+                output_queue.put(("line", f"❌ 技能执行失败，返回码: {return_code}\n"))
+                output_queue.put(("complete", f"执行失败，返回码: {return_code}"))
+        
         except Exception as e:
             error_msg = f"❌ 技能执行错误: {str(e)}"
             output_queue.put(("line", error_msg + "\n"))
             output_queue.put(("complete", error_msg))
-
+        finally:
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
 
 class CreateSkillTool(Tool):
     """创建扩展技能工具 - 允许 AI 自行生成并写入技能文件"""
