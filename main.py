@@ -6083,10 +6083,9 @@ class CommandLineTool(Tool):
             except Exception as e:
                 return f"❌ 执行错误: {str(e)}"
 
-# ==================== AI聊天类（修改版：添加重置对话记忆和重新加载系统提示词功能，压缩静默执行） ====================
-
+# ==================== AI聊天类（支持取消操作） ====================
 class DeepSeekChat:
-    """单AI聊天类"""
+    """单AI聊天类 - 支持取消操作（彻底修复版 V5 - 真正可中断）"""
     
     def __init__(self, api_key: str = None, max_history: int = None,
                  system_prompt: str = None, debug_level: int = None, exit_callback: Callable = None,
@@ -6104,6 +6103,19 @@ class DeepSeekChat:
         self.history_loaded = False
         self.conversation_active = True
         self.messages = []
+        
+        # 取消控制相关 - 彻底修复版 V5
+        self._cancel_requested = False
+        self._current_thread = None
+        self._current_future = None
+        self._current_session = None
+        self._current_response = None
+        self._stop_event = threading.Event()
+        self._current_request_thread = None
+        self._reading_active = False
+        self._read_buffer = []
+        self._request_should_stop = False  # 新增：标记请求应该停止
+        self._request_thread = None  # 新增：记录请求线程
         
         # 添加对话压缩器
         self.compressor = ConversationCompressor(self, self.logger)
@@ -6126,14 +6138,111 @@ class DeepSeekChat:
         self.tool_registry = ToolRegistry(self.logger)
         self._register_tools(exit_callback, command_executor)
     
+    def cancel_current_response(self) -> bool:
+        """取消当前正在进行的响应 - 改进版 V6 - 强制终止"""
+        self.logger.info("开始取消当前响应...")
+        
+        # 设置取消标志
+        self._cancel_requested = True
+        self.conversation_active = False
+        self._stop_event.set()
+        
+        # 标记请求应该停止
+        self._request_should_stop = True
+        
+        # 1. 标记读取活动停止
+        self._reading_active = False
+        
+        # 2. 强制关闭底层socket连接 - 这是关键！
+        if self._current_response:
+            try:
+                # 获取底层socket并关闭
+                if hasattr(self._current_response, 'raw'):
+                    raw = self._current_response.raw
+                    if hasattr(raw, '_fp'):
+                        if hasattr(raw._fp, 'fp'):
+                            raw._fp.fp.close()
+                    if hasattr(raw, 'close'):
+                        raw.close()
+                # 关闭响应
+                self._current_response.close()
+                self.logger.debug("已关闭当前响应连接")
+            except Exception as e:
+                self.logger.debug(f"关闭响应连接失败: {e}")
+            finally:
+                self._current_response = None
+        
+        # 3. 关闭Session - 这会中断正在进行的请求
+        if self._current_session:
+            try:
+                # 使用适配器关闭所有连接
+                if hasattr(self._current_session, 'adapters'):
+                    for adapter in self._current_session.adapters.values():
+                        adapter.close()
+                self._current_session.close()
+                self.logger.debug("已关闭HTTP Session")
+            except Exception as e:
+                self.logger.debug(f"关闭Session失败: {e}")
+            finally:
+                self._current_session = None
+        
+        # 4. 取消Future
+        if self._current_future and not self._current_future.done():
+            self._current_future.cancel()
+            self.logger.debug("已取消Future")
+            self._current_future = None
+        
+        # 5. 中断当前请求线程 - 使用更激进的方式
+        if self._request_thread and self._request_thread.is_alive():
+            self.logger.debug("尝试中断请求线程...")
+            # 等待一小段时间让线程检测到取消标志
+            self._request_thread.join(timeout=0.3)
+            if self._request_thread.is_alive():
+                # 如果线程还活着，尝试抛出异常
+                try:
+                    # 使用 ctypes 抛出异常（仅限 Unix）
+                    import ctypes
+                    exc = SystemExit("Thread cancelled by user")
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                        ctypes.c_long(self._request_thread.ident),
+                        ctypes.py_object(exc)
+                    )
+                    self.logger.debug("已向线程抛出取消异常")
+                except Exception as e:
+                    self.logger.warning(f"无法中断线程: {e}")
+            self._request_thread = None
+        
+        # 6. 清理当前请求线程引用
+        if self._current_request_thread and self._current_request_thread.is_alive():
+            self._current_request_thread.join(timeout=0.2)
+            self._current_request_thread = None
+        
+        self.logger.info("用户取消了当前响应")
+        return True
+
+    def is_cancelled(self) -> bool:
+        """检查是否被取消"""
+        return self._cancel_requested or not self.conversation_active or self._stop_event.is_set() or self._request_should_stop
+    
+    def reset_cancel_state(self):
+        """重置取消状态"""
+        self._cancel_requested = False
+        self.conversation_active = True
+        self._stop_event.clear()
+        self._reading_active = False
+        self._read_buffer = []
+        self._current_response = None
+        self._current_session = None
+        self._current_request_thread = None
+        self._request_should_stop = False
+        self._request_thread = None
+    
     def _init_system_prompts(self, system_prompt: str = None):
-        """初始化系统提示词 - 从 PromptManager 加载"""
+        """初始化系统提示词"""
         if system_prompt:
-            # 如果明确指定了 system_prompt，使用它
             self._add_message("system", system_prompt)
             self.logger.info("使用指定的系统提示词")
         else:
-            # 从 PromptManager 加载所有提示词
             prompts = self.prompt_manager.get_prompts_list()
             if prompts:
                 for prompt in prompts:
@@ -6141,13 +6250,12 @@ class DeepSeekChat:
                         self._add_message("system", prompt['content'].strip())
                 self.logger.info(f"已加载 {len(prompts)} 个系统提示词")
             else:
-                # 如果没有任何提示词，添加一个默认的
                 default_prompt = "你是一个智能AI助手。"
                 self._add_message("system", default_prompt)
                 self.logger.info("使用默认系统提示词")
     
     def _register_tools(self, exit_callback: Callable = None, command_executor: CommandExecutor = None):
-        # 内置工具列表
+        """注册工具"""
         builtin_tools = [
             GetCurrentTimeTool(self.logger),
             CalculatorTool(self.logger),
@@ -6164,24 +6272,17 @@ class DeepSeekChat:
         if self.memo_db:
             builtin_tools.append(MemoTool(self.memo_db, self.logger))
         
-        # 更新身份工具
         builtin_tools.append(UpdateIdentityTool(self.prompt_manager, self.logger))
-        
-        # 新增：更新智能体自我认识工具
         builtin_tools.append(UpdateSoulTool(self.prompt_manager, self.logger))
         
-        # 增强版保存记忆并结束对话工具
         if exit_callback and self.memory_db:
             builtin_tools.append(SaveMemoryAndEndConversationTool(exit_callback, self.memory_db, self.prompt_manager, self.logger))
         
-        # 添加技能热重载工具和创建技能工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
         builtin_tools.append(CreateSkillTool(self.tool_registry, self.logger))
         
-        # 注册内置工具（标记为内置）
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
         
-        # 通过 SkillLoader 加载扩展技能（标记为非内置）
         loader = SkillLoader(constants.SKILLS_DIR, self.logger)
         for extool in loader.discover():
             self.tool_registry.register(extool, is_builtin=False)
@@ -6209,28 +6310,21 @@ class DeepSeekChat:
             self.logger.info(f"已加载 {len(context)} 条历史消息")
     
     def _add_message(self, role: str, content: str):
-        """
-        添加消息到历史
-        - 用户消息：添加时间戳前缀
-        - 助手消息：不添加时间戳前缀
-        """
+        """添加消息到历史"""
         timestamp = datetime.now().strftime(constants.DATETIME_FORMAT)
         
         if role == "assistant":
-            # 助手消息：不添加时间戳前缀，直接保存原始内容
             formatted_content = content
         elif role == "user":
-            # 用户消息：添加时间戳前缀
             formatted_content = f"[用户 @ {timestamp}] {content}"
         else:
-            # 系统消息：保持原样
             formatted_content = content
         
         self.messages.append({"role": role, "content": formatted_content})
         self._cleanup_messages()
     
     def _cleanup_messages(self):
-        """清理消息历史，但保留系统提示词"""
+        """清理消息历史"""
         if len(self.messages) <= self.max_history * 2:
             return
         
@@ -6243,16 +6337,11 @@ class DeepSeekChat:
             self.messages = self.messages[-self.max_history * 2:]
     
     def _save_tool_result_to_file(self, tool_name: str, result: str) -> str:
-        """
-        将工具返回结果保存到文件，返回文件路径
-        """
-        # 创建工具结果目录
+        """将工具返回结果保存到文件"""
         tool_results_dir = os.path.join(constants.SAVE_DIR, "tool_results")
         os.makedirs(tool_results_dir, exist_ok=True)
         
-        # 生成文件名：日期时间_工具名_哈希前8位.json
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 使用简单的哈希来避免文件名冲突
         import hashlib
         hash_suffix = hashlib.md5(result[:100].encode()).hexdigest()[:8]
         safe_tool_name = re.sub(r'[^\w\-]', '_', tool_name)
@@ -6260,11 +6349,9 @@ class DeepSeekChat:
         filepath = os.path.join(tool_results_dir, filename)
         
         try:
-            # 保存结果到文件
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(result)
             
-            # 记录日志
             result_size = len(result)
             size_kb = result_size / 1024
             if size_kb > 1024:
@@ -6279,21 +6366,29 @@ class DeepSeekChat:
             return None
 
     def _handle_tool_calls(self, tool_calls: List[Dict], output_callback: Callable = None) -> List[Dict]:
-        """处理工具调用 - 所有工具的输出都进行发送，并在开始和结束时发送两个回车"""
+        """处理工具调用"""
         if not tool_calls:
+            return []
+        
+        if self.is_cancelled():
+            if output_callback:
+                output_callback("line", "\n\n⛔ 用户已终止操作\n")
             return []
         
         self.stats["tool_calls"] += len(tool_calls)
         tool_messages = []
         
-        # 创建输出队列用于流式输出
         output_queue = queue.Queue()
         self.tool_registry.set_output_queue(output_queue)
         
-        # 结果大小阈值（字符数），从配置获取
         MAX_RESULT_LENGTH = constants.TOOL_MAX_RESULT_LENGTH
         
         for tool_call in tool_calls:
+            if self.is_cancelled():
+                if output_callback:
+                    output_callback("line", "\n\n⛔ 用户已终止操作\n")
+                break
+            
             function = tool_call.get("function", {})
             tool_name = function.get("name")
             arguments = function.get("arguments", "{}")
@@ -6303,33 +6398,33 @@ class DeepSeekChat:
             except json.JSONDecodeError:
                 args = {}
             
-            # 【修改】开始调用工具时发送两个回车
             if output_callback:
                 output_callback("line", "\n\n")
                 output_callback("line", f"🔧 调用工具: {tool_name}\n")
             
-            # 对于支持流式输出的工具，检查是否需要流式输出
             tool = self.tool_registry.get_tool(tool_name)
             supports_streaming = hasattr(tool, 'execute_streaming') if tool else False
             
             result = None
             if supports_streaming and args.get("stream", True):
-                # 在新线程中执行工具
-                # 用默认参数捕获当前循环变量，避免闭包 late-binding bug
                 thread = threading.Thread(
                     target=lambda _tn=tool_name, _a=args: self.tool_registry.execute_tool(_tn, **_a)
                 )
                 thread.daemon = True
                 thread.start()
                 
-                # 实时处理输出 - 确保所有输出都被发送
                 result_lines = []
                 while thread.is_alive() or not output_queue.empty():
+                    if self.is_cancelled():
+                        if output_callback:
+                            output_callback("line", "\n\n⛔ 用户已终止操作\n")
+                        thread.join(timeout=0.5)
+                        break
+                    
                     try:
                         msg_type, content = output_queue.get(timeout=0.1)
                         if msg_type == "line":
                             if output_callback:
-                                # 确保所有行都发送
                                 output_callback("line", content)
                             result_lines.append(content)
                         elif msg_type == "complete":
@@ -6340,20 +6435,15 @@ class DeepSeekChat:
                 
                 result = "".join(result_lines) if result is None else result
             else:
-                # 普通执行 - 修复参数传递问题
                 result = self.tool_registry.execute_tool(tool_name, **args)
-                # 普通执行也发送结果
                 if output_callback and result:
                     output_callback("line", result + "\n")
             
-            # 检查结果大小，如果超过阈值，不返回结果，只返回提示信息
             if result and len(result) > MAX_RESULT_LENGTH:
-                # 不保存文件，直接返回提示信息
                 result = f"⚠️ 工具 {tool_name} 执行结果过大（{len(result)} 字符），超过限制（{MAX_RESULT_LENGTH} 字符），已放弃返回结果。\n\n请考虑：\n1. 使用更精确的查询条件\n2. 使用其他工具获取部分数据\n3. 优化查询方式减少结果数量"
                 if output_callback:
                     output_callback("line", result + "\n")
             
-            # 【修改】结束调用工具时发送两个回车
             if output_callback:
                 output_callback("line", "\n\n")
             
@@ -6368,7 +6458,6 @@ class DeepSeekChat:
                     "tool_call_id": tool_call.get("id"),
                     "content": result
                 })
-                # 【修复】不直接返回，而是添加后继续处理，但设置标志让后续停止
                 break
             
             tool_messages.append({
@@ -6377,36 +6466,15 @@ class DeepSeekChat:
                 "content": result
             })
         
-        # 清除输出队列
         self.tool_registry.set_output_queue(None)
-        
         return tool_messages
 
-    def _should_search_memory(self, user_input: str) -> bool:
-        """判断是否应该搜索记忆"""
-        # 检查用户输入是否包含搜索意图的关键词
-        search_triggers = [
-            '还记得', '之前', '上次', '以前', '我们说过', '我们讨论过',
-            '你记得', '你还记得', '我们聊过', '我们谈到', '我们之前',
-            '根据之前的', '依据历史', 'refer', 'previous', 'before',
-            'last time', 'earlier', '曾经', '过往'
-        ]
-        
-        user_input_lower = user_input.lower()
-        for trigger in search_triggers:
-            if trigger.lower() in user_input_lower:
-                return True
-        
-        # 检查是否是简单问候（可能不需要搜索）
-        greetings = ['你好', '您好', '嗨', 'hello', 'hi', 'hey']
-        if user_input_lower.strip() in greetings:
-            return False
-        
-        # 默认情况下，如果记忆库存在，搜索一下也无妨
-        return True
-    
+
     def think_and_respond(self, input_text: str, output_callback: Callable = None) -> Optional[str]:
-        """思考并回应 - 支持实时流式输出"""
+        """思考并回应 - 支持真正的中断 V6 - 完全可中断版本"""
+        self.reset_cancel_state()
+        self._request_should_stop = False
+        
         if not self.conversation_active:
             self.logger.info("对话已结束，重置状态")
             self.conversation_active = True
@@ -6417,31 +6485,27 @@ class DeepSeekChat:
                 self.messages = []
             self.logger.info("对话状态已重置")
         
-        # 【关键修改】在添加用户消息之前进行压缩检查（输出信息到命令行）
+        # 压缩检查
         should_compress, reason = self.compressor.should_compress(self.messages)
         if should_compress:
             self.logger.debug(f"压缩检查触发: {reason}")
-            
             original_count = len(self.messages)
             original_tokens = self.compressor.estimate_tokens(self.messages)
             
             print(f"\n📦 {i18n.get('conversation_compress')}...")
             print(f"   触发原因: {reason}")
             
-            # 压缩对话（会保护最近的消息）
             self.messages = self.compressor.compress_conversation(self.messages)
             
             compressed_count = len(self.messages)
             compressed_tokens = self.compressor.estimate_tokens(self.messages)
             
-            # 压缩信息已经在 compress_conversation 中输出，这里不需要重复
-            # 但可以保留详细日志
             self.logger.debug(i18n.get('conversation_compressed', original_count, compressed_count))
             self.logger.debug(f"Token数: {original_tokens} -> {compressed_tokens}")
         
         self.stats["api_calls"] += 1
         
-        # 前置提示词：告诉AI先搜索记忆
+        # 构建提示词
         pre_prompt = """【系统指令】
             在回答用户问题之前，请务必先执行以下步骤：
             1. 使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆
@@ -6458,7 +6522,6 @@ class DeepSeekChat:
 
             现在请处理用户的输入："""
 
-        # 后置提示词：提醒AI在结束时保存记忆和状态
         post_prompt = """
 
             【注意】
@@ -6472,7 +6535,6 @@ class DeepSeekChat:
             - 行为准则需要优化
             请使用 `update_soul` 工具更新 99_SOUL.md 文件，这有助于你更好地理解自己并为用户提供更精准的服务。"""
 
-        # 拼接后的用户输入
         enhanced_input = pre_prompt + "\n\n" + input_text + post_prompt
 
         self._add_message("user", enhanced_input)
@@ -6485,15 +6547,11 @@ class DeepSeekChat:
             "Content-Type": "application/json"
         }
         
-        # 如果找到相关记忆，可以添加到上下文中
         enhanced_messages = []
-        
-        # 添加所有系统消息
         for msg in self.messages:
             if msg["role"] == "system":
                 enhanced_messages.append(msg)
         
-        # 添加非系统消息
         for msg in self.messages:
             if msg["role"] != "system":
                 enhanced_messages.append(msg)
@@ -6503,7 +6561,7 @@ class DeepSeekChat:
             "messages": enhanced_messages,
             "temperature": constants.DEFAULT_TEMPERATURE,
             "max_tokens": constants.DEFAULT_MAX_TOKENS,
-            "stream": True  # 始终启用流式
+            "stream": True
         }
         
         tools = self.tool_registry.get_tools_schemas()
@@ -6517,23 +6575,43 @@ class DeepSeekChat:
             output_callback("line", i18n.get('assistant_prefix'))
         
         full_response = ""
-        tool_calls_buffer = []
         current_tool_calls = {}
         
-        # 添加缓冲区来累积字符，避免每个字符都发送
         chunk_buffer = ""
         last_send_time = time.time()
-        MIN_CHUNK_SIZE = 5  # 最小发送大小
-        MAX_CHUNK_DELAY = 0.1  # 最大延迟（秒）
+        MIN_CHUNK_SIZE = 5
+        MAX_CHUNK_DELAY = 0.1
+        
+        # 记录当前请求线程
+        self._request_thread = threading.current_thread()
+        
+        # 创建可取消的事件
+        cancel_event = threading.Event()
         
         try:
-            response = requests.post(
+            # 创建新的session和请求
+            self._current_session = requests.Session()
+            
+            # 使用适配器设置更激进的超时
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=1,
+                pool_maxsize=1,
+                max_retries=0,
+                pool_block=False
+            )
+            self._current_session.mount('http://', adapter)
+            self._current_session.mount('https://', adapter)
+            
+            # 发送请求 - 使用更短的超时
+            response = self._current_session.post(
                 constants.DEEPSEEK_API_URL,
                 headers=headers,
                 json=payload,
-                timeout=constants.DEFAULT_TIMEOUT,
+                timeout=(5, None),  # 连接超时5秒，读取超时无限（通过手动控制）
                 stream=True
             )
+            
+            self._current_response = response
             
             if response.status_code != 200:
                 error_msg = f"\n错误状态码: {response.status_code}\n错误响应: {response.text}"
@@ -6541,89 +6619,139 @@ class DeepSeekChat:
                     output_callback("error", error_msg)
                 response.raise_for_status()
             
-            # 处理流式响应 - 实时调用回调
-            for line in response.iter_lines():
-                if line:
-                    line = line.decode('utf-8')
-                    if line.startswith('data: '):
-                        data = line[6:]  # 去掉 'data: ' 前缀
-                        if data == '[DONE]':
-                            # 发送缓冲区中剩余的内容
-                            if chunk_buffer and output_callback:
-                                output_callback("chunk", chunk_buffer)
-                                chunk_buffer = ""
-                            if output_callback:
-                                output_callback("line", "\n")
-                            break
-                        
+            # 使用迭代器，每次读取一小块，以便检查取消标志
+            response_iterator = response.iter_content(chunk_size=256, decode_unicode=False)
+            
+            # 设置一个线程来定期检查取消
+            def check_cancel():
+                while not cancel_event.is_set():
+                    time.sleep(0.05)
+                    if self.is_cancelled() or self._request_should_stop:
+                        cancel_event.set()
+                        # 强制关闭响应
                         try:
-                            chunk = json.loads(data)
-                            choices = chunk.get('choices', [])
-                            if not choices:
+                            response.close()
+                        except:
+                            pass
+                        break
+            
+            cancel_checker = threading.Thread(target=check_cancel)
+            cancel_checker.daemon = True
+            cancel_checker.start()
+            
+            line_buffer = ""
+            for chunk in response_iterator:
+                # 检查取消标志
+                if cancel_event.is_set() or self.is_cancelled() or self._request_should_stop:
+                    if output_callback:
+                        output_callback("line", "\n\n⛔ 用户已终止对话\n")
+                    self.logger.info("响应已被用户取消")
+                    response.close()
+                    return None
+                
+                if chunk:
+                    try:
+                        chunk_str = chunk.decode('utf-8')
+                        line_buffer += chunk_str
+                        
+                        while '\n' in line_buffer:
+                            line, line_buffer = line_buffer.split('\n', 1)
+                            line = line.strip()
+                            
+                            if not line:
                                 continue
                             
-                            delta = choices[0].get('delta', {})
-                            
-                            # 处理内容 - 批量发送以提高效率
-                            if 'content' in delta and delta['content']:
-                                content = delta['content']
-                                chunk_buffer += content
-                                full_response += content
+                            if line.startswith('data: '):
+                                data = line[6:]
+                                if data == '[DONE]':
+                                    break
                                 
-                                # 判断是否需要发送缓冲区
-                                current_time = time.time()
-                                if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
-                                    current_time - last_send_time >= MAX_CHUNK_DELAY):
-                                    if output_callback:
-                                        output_callback("chunk", chunk_buffer)
-                                    chunk_buffer = ""
-                                    last_send_time = current_time
-                            
-                            # 处理工具调用
-                            if 'tool_calls' in delta:
-                                tool_calls = delta['tool_calls']
-                                for tc in tool_calls:
-                                    index = tc.get('index', 0)
+                                try:
+                                    chunk_data = json.loads(data)
                                     
-                                    if index not in current_tool_calls:
-                                        current_tool_calls[index] = {
-                                            'id': tc.get('id', ''),
-                                            'type': 'function',
-                                            'function': {
-                                                'name': '',
-                                                'arguments': ''
-                                            }
-                                        }
+                                    # 再次检查取消标志
+                                    if cancel_event.is_set() or self.is_cancelled() or self._request_should_stop:
+                                        if output_callback:
+                                            output_callback("line", "\n\n⛔ 用户已终止对话\n")
+                                        response.close()
+                                        return None
                                     
-                                    if 'function' in tc:
-                                        if 'name' in tc['function']:
-                                            current_tool_calls[index]['function']['name'] = tc['function']['name']
-                                        if 'arguments' in tc['function']:
-                                            current_tool_calls[index]['function']['arguments'] += tc['function']['arguments']
-                            
-                        except json.JSONDecodeError as e:
-                            self.logger.error(f"JSON解析错误: {e}, 数据: {data}")
-                            continue
+                                    choices = chunk_data.get('choices', [])
+                                    if not choices:
+                                        continue
+                                    
+                                    delta = choices[0].get('delta', {})
+                                    
+                                    if 'content' in delta and delta['content']:
+                                        content = delta['content']
+                                        chunk_buffer += content
+                                        full_response += content
+                                        
+                                        current_time = time.time()
+                                        if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
+                                            current_time - last_send_time >= MAX_CHUNK_DELAY):
+                                            if output_callback:
+                                                output_callback("chunk", chunk_buffer)
+                                            chunk_buffer = ""
+                                            last_send_time = current_time
+                                    
+                                    if 'tool_calls' in delta:
+                                        tool_calls = delta['tool_calls']
+                                        for tc in tool_calls:
+                                            index = tc.get('index', 0)
+                                            
+                                            if index not in current_tool_calls:
+                                                current_tool_calls[index] = {
+                                                    'id': tc.get('id', ''),
+                                                    'type': 'function',
+                                                    'function': {
+                                                        'name': '',
+                                                        'arguments': ''
+                                                    }
+                                                }
+                                            
+                                            if 'function' in tc:
+                                                if 'name' in tc['function']:
+                                                    current_tool_calls[index]['function']['name'] = tc['function']['name']
+                                                if 'arguments' in tc['function']:
+                                                    current_tool_calls[index]['function']['arguments'] += tc['function']['arguments']
+                                    
+                                except json.JSONDecodeError:
+                                    continue
+                                
+                    except UnicodeDecodeError:
+                        continue
             
-            # 处理收集到的工具调用
+            cancel_checker.join(timeout=0.5)
+            
+            # 再次检查取消状态
+            if cancel_event.is_set() or self.is_cancelled() or self._request_should_stop:
+                if output_callback:
+                    output_callback("line", "\n\n⛔ 用户已终止对话\n")
+                return None
+            
+            # 发送剩余的chunk
+            if chunk_buffer and output_callback:
+                output_callback("chunk", chunk_buffer)
+            if output_callback:
+                output_callback("line", "\n")
+            
+            # 处理工具调用
             if current_tool_calls:
                 tool_calls_buffer = list(current_tool_calls.values())
                 if output_callback:
                     output_callback("line", i18n.get('calling_tools') + "\n")
                 
-                # 添加助手消息
                 assistant_msg_content = full_response if full_response else None
                 if assistant_msg_content:
                     self._add_message("assistant", assistant_msg_content)
                     if self.history_manager:
                         self.history_manager.add_message("assistant", assistant_msg_content, self.name)
                 else:
-                    # 如果没有内容，也需要记录空消息
                     self._add_message("assistant", "")
                     if self.history_manager:
                         self.history_manager.add_message("assistant", "", self.name)
                 
-                # 添加工具调用消息
                 assistant_msg = {
                     "role": "assistant",
                     "content": None,
@@ -6631,11 +6759,16 @@ class DeepSeekChat:
                 }
                 self.messages.append(assistant_msg)
                 
+                # 在处理工具调用前检查取消状态
+                if cancel_event.is_set() or self.is_cancelled():
+                    if output_callback:
+                        output_callback("line", "\n\n⛔ 用户已终止操作\n")
+                    return None
+                
                 tool_responses = self._handle_tool_calls(tool_calls_buffer, output_callback)
                 
                 if not self.conversation_active:
                     self.logger.info("对话已结束，停止响应")
-                    # 【修复】发送对话结束信号
                     if output_callback:
                         output_callback("dialogue_ended", i18n.get('dialogue_ended'))
                     return None
@@ -6652,13 +6785,39 @@ class DeepSeekChat:
                 if self.history_manager:
                     self.history_manager.add_message("assistant", full_response, self.name)
                 
-                # 发送完成消息
                 if output_callback:
                     output_callback("complete", full_response)
             
             return full_response if full_response else ""
                 
+        except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError) as e:
+            # 连接被关闭 - 检查是否是取消导致的
+            if cancel_event.is_set() or self.is_cancelled() or self._request_should_stop:
+                if output_callback:
+                    output_callback("line", "\n\n⛔ 用户已终止对话\n")
+                return None
+            
+            error_msg = f"\n{i18n.get('error_prefix')}连接错误: {str(e)}"
+            if output_callback:
+                output_callback("error", error_msg)
+            self.stats["errors"].append(str(e))
+            return error_msg
+        except requests.exceptions.ReadTimeout as e:
+            # 读取超时 - 检查是否是取消导致的
+            if cancel_event.is_set() or self.is_cancelled() or self._request_should_stop:
+                return None
+            
+            error_msg = f"\n{i18n.get('error_prefix')}读取超时: {str(e)}"
+            if output_callback:
+                output_callback("error", error_msg)
+            self.stats["errors"].append(str(e))
+            return error_msg
         except requests.exceptions.RequestException as e:
+            if cancel_event.is_set() or self.is_cancelled() or self._request_should_stop:
+                if output_callback:
+                    output_callback("line", "\n\n⛔ 用户已终止对话\n")
+                return None
+            
             error_msg = f"\n{i18n.get('error_prefix')}API请求失败: {str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
@@ -6671,29 +6830,48 @@ class DeepSeekChat:
             self.stats["errors"].append(str(e))
             return error_msg
         except Exception as e:
+            # 如果是取消导致的异常，静默处理
+            if cancel_event.is_set() or self.is_cancelled() or self._request_should_stop:
+                self.logger.debug("响应因用户取消而中断")
+                return None
+            
             error_msg = f"\n{i18n.get('error_prefix')}{str(e)}"
             if output_callback:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
             return error_msg
+        finally:
+            # 清理资源
+            self._reading_active = False
+            if self._current_response:
+                try:
+                    self._current_response.close()
+                except:
+                    pass
+            if self._current_session:
+                try:
+                    self._current_session.close()
+                except:
+                    pass
+            self._current_response = None
+            self._current_session = None
+            self._current_request_thread = None
+            self._request_thread = None
+
 
     def reset_conversation(self, reload_prompts: bool = True):
-        """
-        重置对话状态 - 清除所有对话记忆，可选择是否重新加载系统提示词
-        
-        Args:
-            reload_prompts: 是否重新加载系统提示词，默认为 True
-        """
+        """重置对话状态"""
         self.conversation_active = True
-        self.history_loaded = False  # 重置历史加载标记
+        self.history_loaded = False
+        self._cancel_requested = False
+        self._stop_event.clear()
+        self._request_should_stop = False
         
         if reload_prompts:
-            # 完全重置：清除所有消息，重新加载系统提示词
             self.messages = []
             self._init_system_prompts()
             self.logger.info("对话已完全重置，系统提示词已重新加载")
         else:
-            # 只清除非系统消息，保留系统提示词
             if self.preserve_system:
                 system_messages = [msg for msg in self.messages if msg["role"] == "system"]
                 self.messages = system_messages
@@ -6705,28 +6883,26 @@ class DeepSeekChat:
         """重新加载提示词"""
         old_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
         
-        # 移除所有旧的系统消息
         self.messages = [msg for msg in self.messages if msg["role"] != "system"]
         
-        # 重新加载提示词
         self.prompt_manager.reload()
         self._init_system_prompts()
         
         new_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
         self.logger.info(f"提示词已重新加载: {old_system_count} -> {new_system_count} 个")
         return new_system_count
-
-
-# ==================== WebSocket处理器（修改版：添加重置对话功能） ====================
+    
+# ==================== WebSocket处理器（支持取消操作） ====================
 
 class WebSocketHandler:
-    """WebSocket处理器 - 处理WebSocket连接和消息"""
+    """WebSocket处理器 - 处理WebSocket连接和消息，支持取消操作"""
     
     def __init__(self, ai_manager):
         self.ai_manager = ai_manager
         self.logger = Logger("WebSocket")
         self.connected_clients = set()
         self.client_sessions = {}
+        self._current_tasks = {}  # 当前正在执行的任务 {websocket: asyncio.Task}
         
     async def register(self, websocket):
         """注册新客户端"""
@@ -6753,6 +6929,12 @@ class WebSocketHandler:
         self.connected_clients.remove(websocket)
         if websocket in self.client_sessions:
             del self.client_sessions[websocket]
+        # 清理当前任务
+        if websocket in self._current_tasks:
+            task = self._current_tasks[websocket]
+            if not task.done():
+                task.cancel()
+            del self._current_tasks[websocket]
         self.logger.info(i18n.get('client_disconnected', websocket.remote_address))
     
     async def send_welcome_info(self, websocket):
@@ -6879,6 +7061,9 @@ class WebSocketHandler:
                 await self.handle_command(websocket, data)
             elif msg_type == "message":
                 await self.handle_user_message(websocket, data)
+            elif msg_type == "stop_conversation":
+                # 前端"终止对话"按钮专用消息类型，效果与 /stop 命令相同
+                await self.handle_stop_conversation(websocket)
             elif msg_type == "task":
                 await self.handle_task_message(websocket, data)
             elif msg_type == "ping":
@@ -6903,7 +7088,67 @@ class WebSocketHandler:
                 "type": "error",
                 "content": f"处理失败: {str(e)}"
             })
-    
+
+    async def handle_stop_conversation(self, websocket):
+        """处理终止对话请求 - 改进版 V2 - 更可靠的取消"""
+        self.logger.info(f"收到终止对话请求: {websocket.remote_address}")
+        
+        # 取消当前任务
+        if websocket in self._current_tasks:
+            task = self._current_tasks[websocket]
+            if not task.done():
+                # 立即取消任务
+                task.cancel()
+                self.logger.info(f"已取消任务: {websocket.remote_address}")
+                
+                # 等待一小段时间让任务真正停止
+                try:
+                    await asyncio.wait_for(task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    self.logger.info("任务已成功取消")
+        
+        # 强制通知AI取消当前响应 - 使用更可靠的方式
+        if self.ai_manager.ai:
+            # 在单独的线程中执行取消，避免阻塞
+            cancel_result = [False]
+            
+            def cancel_ai():
+                try:
+                    cancel_result[0] = self.ai_manager.ai.cancel_current_response()
+                except Exception as e:
+                    self.logger.error(f"取消AI响应失败: {e}")
+            
+            cancel_thread = threading.Thread(target=cancel_ai)
+            cancel_thread.daemon = True
+            cancel_thread.start()
+            cancel_thread.join(timeout=1.0)
+            
+            if cancel_result[0]:
+                self.logger.info("AI响应已成功取消")
+            else:
+                self.logger.warning("AI响应取消可能未完全成功")
+            
+            # 额外等待确保取消生效
+            await asyncio.sleep(0.2)
+            
+            # 重置AI的取消状态，以便下次对话
+            self.ai_manager.ai.reset_cancel_state()
+            self.logger.info("AI取消状态已重置")
+        
+        # 重置对话进行中标记
+        self.ai_manager.dialogue_in_progress = False
+        
+        # 发送终止确认
+        await self.send_message(websocket, {
+            "type": "dialogue_ended",
+            "content": "⛔ 对话已被强制终止"
+        })
+        await self.send_message(websocket, {
+            "type": "command_result",
+            "content": "⛔ 对话已强制终止，可直接发送新消息开始下一轮对话"
+        })
+
+
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
         action = data.get("action", "").strip()
@@ -6993,6 +7238,143 @@ class WebSocketHandler:
                         "content": i18n.get('memo_complete_failed', memo_id)
                     })
     
+    async def handle_user_message(self, websocket, data):
+        """处理用户消息 - 支持取消"""
+        content = data.get("content", "").strip()
+        
+        if not content:
+            return
+        
+        # 检查是否有正在进行的对话
+        if websocket in self._current_tasks and not self._current_tasks[websocket].done():
+            # 先取消当前任务
+            self._current_tasks[websocket].cancel()
+            await asyncio.sleep(0.1)  # 给一点时间让取消生效
+        
+        # 创建新任务
+        task = asyncio.create_task(self._process_user_message(websocket, content))
+        self._current_tasks[websocket] = task
+        
+        try:
+            await task
+        except asyncio.CancelledError:
+            self.logger.info(f"用户消息处理被取消: {websocket.remote_address}")
+            await self.send_message(websocket, {
+                "type": "dialogue_ended",
+                "content": "⛔ 对话已被终止"
+            })
+        finally:
+            if websocket in self._current_tasks:
+                del self._current_tasks[websocket]
+    
+    async def _process_user_message(self, websocket, content):
+        """实际处理用户消息"""
+        self.logger.info(f"收到用户消息: {content[:50]}...")
+        
+        # 确保AI已初始化
+        if not self.ai_manager.ai:
+            self.logger.info("初始化AI...")
+            self.ai_manager.add_ai()
+        
+        # 如果还没有活跃对话，开始新对话
+        if not self.ai_manager.dialogue_in_progress:
+            self.logger.info("开始新对话")
+            self.ai_manager.dialogue_in_progress = True
+            self.ai_manager.history_manager.start_new_conversation(content[:50] + "...")
+            
+            # 发送对话开始消息
+            await self.send_message(websocket, {
+                "type": "info",
+                "content": i18n.get('conversation_start')
+            })
+        
+        # 获取当前事件循环
+        loop = asyncio.get_running_loop()
+        
+        # 定义输出回调函数 - 实时发送
+        def output_callback(msg_type, content):
+            """AI输出的回调函数 - 实时发送每个chunk"""
+            # 创建发送消息的协程
+            async def send_msg():
+                try:
+                    # 检查连接是否还在
+                    if websocket not in self.connected_clients:
+                        return
+                    await websocket.send(json.dumps({
+                        "type": msg_type,
+                        "content": content
+                    }, ensure_ascii=False))
+                except Exception as e:
+                    self.logger.error(f"实时发送消息失败: {e}")
+            
+            # 提交到事件循环
+            asyncio.run_coroutine_threadsafe(send_msg(), loop)
+        
+        # 创建取消检查函数
+        def is_cancelled():
+            """检查当前任务是否被取消"""
+            # 检查AI的取消标志
+            if self.ai_manager.ai and self.ai_manager.ai.is_cancelled():
+                return True
+            # 检查当前任务
+            task = asyncio.current_task()
+            return task and task.cancelled()
+        
+        # 让AI思考并回应 - 不等待完整响应，通过回调实时发送
+        try:
+            self.logger.info("开始AI思考...")
+            
+            # 创建可取消的Future
+            future = loop.create_future()
+            
+            def run_ai():
+                try:
+                    response = self.ai_manager.ai.think_and_respond(content, output_callback)
+                    loop.call_soon_threadsafe(future.set_result, response)
+                except Exception as e:
+                    loop.call_soon_threadsafe(future.set_exception, e)
+            
+            # 记录当前响应线程
+            thread = threading.Thread(target=run_ai)
+            thread.daemon = True
+            thread.start()
+            
+            try:
+                response = await future
+                self.logger.info(f"AI思考完成，完整响应长度: {len(response) if response else 0}")
+            except asyncio.CancelledError:
+                # 取消AI线程
+                if self.ai_manager.ai:
+                    self.ai_manager.ai.cancel_current_response()
+                raise
+            
+            # 检查对话是否结束
+            if not self.ai_manager.ai.conversation_active:
+                self.logger.info("对话结束")
+                self.ai_manager.dialogue_in_progress = False
+                self.ai_manager.history_manager.end_current_conversation()
+                await self.send_message(websocket, {
+                    "type": "info",
+                    "content": i18n.get('conversation_ended')
+                })
+                # 【修复】发送明确的对话结束信号
+                await self.send_message(websocket, {
+                    "type": "dialogue_ended",
+                    "content": i18n.get('dialogue_ended')
+                })
+                
+        except Exception as e:
+            self.logger.error(f"AI处理消息失败: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "content": f"{i18n.get('error_prefix')}{str(e)}"
+                }, ensure_ascii=False))
+            except:
+                pass
+
     async def handle_command(self, websocket, data):
         """处理命令消息"""
         command = data.get("command", "").strip()
@@ -7021,6 +7403,9 @@ class WebSocketHandler:
             })
             self.ai_manager.shutdown_server()
             
+        elif command == "/stop":
+            await self.handle_stop_conversation(websocket)
+
         elif command == "/new":
             # 【新增】开始新对话：保存当前对话，重置AI状态，重新加载系统提示词
             self.ai_manager.history_manager.archive_current_conversation()
@@ -7187,6 +7572,7 @@ class WebSocketHandler:
             help_text = f"\n可用命令:\n"
             help_text += "  /exit - 断开当前连接\n"
             help_text += "  /shutdown - 关闭整个服务器进程\n"
+            help_text += "  /stop - 强制终止当前AI回复\n"
             help_text += "  /new - 开始新对话（保存当前对话，重置AI记忆，重新加载系统提示词）\n"
             help_text += "  /list - 列出所有对话\n"
             help_text += "  /memories - 查看最近的记忆\n"
@@ -7212,96 +7598,6 @@ class WebSocketHandler:
         else:
             # 如果不是命令，当作普通消息处理
             await self.handle_user_message(websocket, {"type": "message", "content": command})
-
-    async def handle_user_message(self, websocket, data):
-        """处理用户消息 - 实时流式输出"""
-        content = data.get("content", "").strip()
-        
-        if not content:
-            return
-        
-        self.logger.info(f"收到用户消息: {content[:50]}...")
-        
-        # 确保AI已初始化
-        if not self.ai_manager.ai:
-            self.logger.info("初始化AI...")
-            self.ai_manager.add_ai()
-        
-        # 如果还没有活跃对话，开始新对话
-        if not self.ai_manager.dialogue_in_progress:
-            self.logger.info("开始新对话")
-            self.ai_manager.dialogue_in_progress = True
-            self.ai_manager.history_manager.start_new_conversation(content[:50] + "...")
-            
-            # 发送对话开始消息
-            await self.send_message(websocket, {
-                "type": "info",
-                "content": i18n.get('conversation_start')
-            })
-        
-        # 获取当前事件循环
-        loop = asyncio.get_running_loop()
-        
-        # 定义输出回调函数 - 实时发送
-        def output_callback(msg_type, content):
-            """AI输出的回调函数 - 实时发送每个chunk"""
-            self.logger.info(f"输出回调被调用: {msg_type}, 内容长度: {len(content)}")
-            
-            # 创建发送消息的协程
-            async def send_msg():
-                try:
-                    await websocket.send(json.dumps({
-                        "type": msg_type,
-                        "content": content
-                    }, ensure_ascii=False))
-                    self.logger.info(f"实时消息发送成功: {msg_type}")
-                except Exception as e:
-                    self.logger.error(f"实时发送消息失败: {e}")
-            
-            # 提交到事件循环
-            asyncio.run_coroutine_threadsafe(send_msg(), loop)
-        
-        # 让AI思考并回应 - 不等待完整响应，通过回调实时发送
-        try:
-            self.logger.info("开始AI思考...")
-            
-            # 在线程池中运行AI思考，通过回调实时发送消息
-            response = await loop.run_in_executor(
-                None,
-                self.ai_manager.ai.think_and_respond,
-                content,
-                output_callback  # 传递回调函数，AI会在生成每个chunk时调用
-            )
-            
-            self.logger.info(f"AI思考完成，完整响应长度: {len(response) if response else 0}")
-            
-            # 检查对话是否结束
-            if not self.ai_manager.ai.conversation_active:
-                self.logger.info("对话结束")
-                self.ai_manager.dialogue_in_progress = False
-                self.ai_manager.history_manager.end_current_conversation()
-                await self.send_message(websocket, {
-                    "type": "info",
-                    "content": i18n.get('conversation_ended')
-                })
-                # 【修复】发送明确的对话结束信号
-                await self.send_message(websocket, {
-                    "type": "dialogue_ended",
-                    "content": i18n.get('dialogue_ended')
-                })
-                
-        except Exception as e:
-            self.logger.error(f"AI处理消息失败: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                await websocket.send(json.dumps({
-                    "type": "error",
-                    "content": f"{i18n.get('error_prefix')}{str(e)}"
-                }, ensure_ascii=False))
-            except:
-                pass
-
 
 # ==================== 对话管理器（修改版：添加重置对话功能） ====================
 
