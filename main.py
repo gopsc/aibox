@@ -14,7 +14,6 @@ import json
 import os
 import re
 import shlex
-import uuid
 import subprocess
 import sys
 import time
@@ -24,7 +23,6 @@ import functools
 import queue
 import locale
 import asyncio
-import aiohttp
 import websockets
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
@@ -62,11 +60,7 @@ class I18n:
     def _detect_language(self):
         """检测系统语言环境"""
         try:
-            try:
-                system_locale = locale.getlocale()[0] or locale.getdefaultlocale()[0]
-            except:
-                system_locale = None
-
+            system_locale, _ = locale.getdefaultlocale()
             if system_locale:
                 if system_locale.startswith('en_'):
                     self._lang = 'en'
@@ -1095,9 +1089,9 @@ class ConfigManager:
                 "broadcast_enabled": True
             },
             "api": {
-                "deepseek_api_url": "https://api.deepseek.com/v1/chat/completions",
-                "deepseek_model": "deepseek-chat",
-                "api_key_env": "DEEPSEEK_API_KEY",
+                "deepseek_api_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+                "deepseek_model": "doubao-seed-2-0-mini-260215",
+                "api_key_env": "ARK_API_KEY",
                 "timeout": 30,
                 "temperature": 0.7
             },
@@ -1833,9 +1827,9 @@ class ConversationCompressor:
             return content[:100] + "..."
         
         return content
-        
-    async def _compress_via_llm(self, messages: List[Dict]) -> Optional[str]:
-        """通过语言模型压缩消息 - 异步版本"""
+    
+    def _compress_via_llm(self, messages: List[Dict]) -> Optional[str]:
+        """通过语言模型压缩消息"""
         if not messages:
             return None
         
@@ -1844,41 +1838,40 @@ class ConversationCompressor:
         print(f"📦 {i18n.get('conversation_compress')}: 正在压缩 {len(messages)} 条消息...")
         
         try:
-            # 使用 aiohttp 替代 requests
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "Authorization": f"Bearer {self.ai.api_key}",
-                    "Content-Type": "application/json"
-                }
+            headers = {
+                "Authorization": f"Bearer {self.ai.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": constants.DEEPSEEK_MODEL,
+                "messages": [
+                    {"role": "system", "content": "你是一个专业的对话摘要助手，擅长提取对话核心信息并进行结构化总结。请保留工具调用的关键结果。"},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": constants.COMPRESSOR_LLM_MAX_TOKENS
+            }
+            
+            response = requests.post(
+                constants.DEEPSEEK_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                summary = result["choices"][0]["message"]["content"].strip()
+                return summary
+            else:
+                print(f"   ❌ 语言模型压缩失败: HTTP {response.status_code}")
+                return None
                 
-                payload = {
-                    "model": constants.DEEPSEEK_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "你是一个专业的对话摘要助手，擅长提取对话核心信息并进行结构化总结。请保留工具调用的关键结果。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": constants.COMPRESSOR_LLM_MAX_TOKENS
-                }
-                
-                async with session.post(
-                    constants.DEEPSEEK_API_URL,
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        summary = result["choices"][0]["message"]["content"].strip()
-                        return summary
-                    else:
-                        print(f"   ❌ 语言模型压缩失败: HTTP {response.status}")
-                        return None
-                    
         except Exception as e:
             self.logger.error(f"语言模型压缩异常: {e}")
             return None
-
+    
     def _validate_message_structure(self, messages: List[Dict]) -> List[Dict]:
         """验证并修复消息结构，移除孤立的 tool 消息"""
         if not messages:
@@ -1905,7 +1898,7 @@ class ConversationCompressor:
         
         return filtered
     
-    async def compress_conversation(self, messages: List[Dict]) -> List[Dict]:
+    def compress_conversation(self, messages: List[Dict]) -> List[Dict]:
         """
         压缩对话内容 - 优先压缩较早的消息，包含tool调用信息一并压缩
         当消息条数超过阈值时，压缩到阈值以下
@@ -1988,7 +1981,7 @@ class ConversationCompressor:
             return messages
         
         # 调用语言模型压缩
-        summary = await self._compress_via_llm(compressible)
+        summary = self._compress_via_llm(compressible)
         
         if not summary:
             print(f"   ❌ 压缩失败，保留原始对话")
@@ -2783,13 +2776,15 @@ class TaskScheduler:
         except Exception as e:
             self.logger.error(f"检查任务失败: {e}")
             return []
- 
+        
     async def execute_task_as_conversation(self, memo: Dict, memo_db: MemoDatabase) -> str:
-        """执行任务 - 异步版本"""
+        """执行任务 - 将备忘录内容作为用户输入触发AI对话，收集完整的过程回复"""
         self.logger.info(i18n.get('task_executing', memo['title'], memo['id']))
         
+        # 生成唯一的执行ID（基于任务ID和时间戳）
         execution_id = f"{memo['id']}_{int(time.time())}_{memo.get('trigger_count', 0) + 1}"
         
+        # 记录执行历史
         self.execution_history.append({
             "id": memo['id'],
             "execution_id": execution_id,
@@ -2798,13 +2793,16 @@ class TaskScheduler:
             "trigger_count": memo.get('trigger_count', 0) + 1
         })
         
+        # 限制历史记录大小
         if len(self.execution_history) > self.max_history:
             self.execution_history = self.execution_history[-self.max_history:]
         
+        # 构建用户输入内容 - 将任务作为对话触发
         user_input = f"[定时任务] {memo['title']}"
         if memo['content']:
             user_input += f"\n\n任务内容: {memo['content']}"
         
+        # 添加专注提示词，让AI专注于当前任务
         focus_prompt = f"""
     【重要提示】
     这是由定时任务触发的对话，请遵守以下要求：
@@ -2819,46 +2817,84 @@ class TaskScheduler:
         
         result = "任务已触发AI对话"
         
+        # 如果有AI管理器，触发AI对话
         if self.ai_manager and self.ai_manager.ai:
             try:
+                # 获取当前事件循环
                 loop = asyncio.get_running_loop()
-                full_response_queue = asyncio.Queue()
                 
-                async def async_output_callback(msg_type, content):
-                    """异步回调"""
+                # 创建一个队列来收集完整的响应
+                full_response_queue = queue.Queue()
+                
+                # 定义输出回调函数 - 直接广播，同时收集
+                def output_callback(msg_type, content):
+                    """AI输出的回调函数 - 直接广播，同时收集"""
+                    # 收集完整响应
                     if msg_type == "complete":
-                        await full_response_queue.put(content)
+                        full_response_queue.put(content)
                     
+                    # 直接广播给所有客户端 - 必须带上 task_id 和 execution_id
                     if self.ws_handler and self.broadcast_enabled:
-                        await self.ws_handler.broadcast({
-                            "type": "task_process",
-                            "task_id": str(memo['id']),
-                            "execution_id": execution_id,
-                            "task_title": memo['title'],
-                            "msg_type": msg_type,
-                            "content": content,
-                            "is_new_execution": msg_type == "chunk",
-                            "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
-                        })
+                        # 使用 run_coroutine_threadsafe 在正确的循环中运行异步函数
+                        asyncio.run_coroutine_threadsafe(
+                            self.ws_handler.broadcast({
+                                "type": "task_process",
+                                "task_id": str(memo['id']),  # 原始任务ID
+                                "execution_id": execution_id,  # 唯一的执行ID
+                                "task_title": memo['title'],
+                                "msg_type": msg_type,
+                                "content": content,
+                                "is_new_execution": msg_type == "chunk",  # 标记是否为新的执行
+                                "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
+                            }),
+                            loop
+                        )
                 
+                # 修改：确保AI处于新对话状态，不加载历史上下文
                 if self.ai_manager.ai:
+                    # 重置AI对话状态，但保留系统提示词
                     self.ai_manager.ai.reset_conversation()
                     self.logger.info("AI对话状态已重置，准备执行任务")
                 
-                # 直接异步调用，不再使用线程
-                response = await self.ai_manager.ai.think_and_respond(user_input, async_output_callback)
-                result = response or "AI无响应"
+                # 创建一个 Future 来等待 AI 完成
+                ai_future = loop.create_future()
+                
+                def run_ai():
+                    try:
+                        # 在单独的线程中运行 AI
+                        response = self.ai_manager.ai.think_and_respond(user_input, output_callback)
+                        # 将结果设置到 Future 中
+                        loop.call_soon_threadsafe(ai_future.set_result, response)
+                    except Exception as e:
+                        loop.call_soon_threadsafe(ai_future.set_exception, e)
+                
+                # 启动 AI 线程
+                ai_thread = threading.Thread(target=run_ai)
+                ai_thread.daemon = True
+                ai_thread.start()
+                
+                # 等待 AI 完成，同时处理可能的取消
+                try:
+                    response = await ai_future
+                    result = response or "AI无响应"
+                except Exception as e:
+                    self.logger.error(f"AI对话失败: {e}")
+                    result = f"任务执行但AI对话失败: {str(e)}"
+                finally:
+                    # 确保线程结束
+                    ai_thread.join(timeout=1.0)
                 
             except Exception as e:
                 self.logger.error(f"AI对话失败: {e}")
                 import traceback
                 traceback.print_exc()
                 result = f"任务执行但AI对话失败: {str(e)}"
+                # 广播错误信息
                 if self.ws_handler and self.broadcast_enabled:
                     try:
                         await self.ws_handler.broadcast({
                             "type": "task_error",
-                            "task_id": str(memo['id']),
+                            "task_id": str(memo['id']),  # 确保是字符串
                             "execution_id": execution_id,
                             "task_title": memo['title'],
                             "error": str(e),
@@ -2867,6 +2903,7 @@ class TaskScheduler:
                     except:
                         pass
         
+        # 获取任务的最新状态（可选，用于日志）
         updated_memo = memo_db.get_memo(memo['id'])
         if updated_memo:
             if not updated_memo['is_completed'] and updated_memo.get('reminder_time'):
@@ -3619,6 +3656,7 @@ class ToolRegistry:
         self._builtin_tools: Dict[str, Tool] = {}  # 内置工具单独存储
         self.logger = logger or Logger("ToolRegistry")
         self.current_output_queue = None  # 用于流式输出的队列
+        self.skill_manager: Optional['SkillManager'] = None  # 技能管理器引用
     
     def register(self, tool: Tool, is_builtin: bool = False):
         """注册工具，可以标记是否为内置工具"""
@@ -3651,13 +3689,13 @@ class ToolRegistry:
         for tool in self._tools.values():
             tool.output_queue = queue
     
-    def execute_tool(self, tool_name: str, **kwargs) -> str:
+    def execute_tool(self, name: str, **kwargs) -> str:
         """执行工具"""
-        tool = self.get_tool(tool_name)
+        tool = self.get_tool(name)
         if not tool:
-            return f"❌ 错误：找不到工具 '{tool_name}'"
+            return f"❌ 错误：找不到工具 '{name}'"
         
-        self.logger.debug(f"工具调用: {tool_name}({kwargs})")
+        self.logger.debug(f"工具调用: {name}({kwargs})")
         start_time = time.time()
         
         try:
@@ -3717,31 +3755,16 @@ class ToolRegistry:
     
     def reload_skills(self, skills_dir: str = None) -> int:
         """
-        重新加载所有扩展技能（热重载）
-        保留内置工具，只重新加载扩展技能
-        使用 SkillLoader 统一管理技能发现逻辑
+        重新加载所有扩展技能（热重载）。
+        委托给 SkillManager 重新扫描目录并执行 --help 收集简介。
         """
-        if skills_dir is None:
-            skills_dir = constants.SKILLS_DIR
-
         self.logger.info("开始重新加载扩展技能...")
-
-        # 移除所有非内置工具
-        tools_to_remove = [name for name in self._tools.keys()
-                           if name not in self._builtin_tools]
-        for name in tools_to_remove:
-            del self._tools[name]
-            self.logger.debug(f"移除旧技能: {name}")
-
-        # 通过 SkillLoader 重新发现并注册技能
-        loader = SkillLoader(skills_dir, self.logger)
-        new_tools = loader.discover()
-        for tool in new_tools:
-            self.register(tool, is_builtin=False)
-
-        loaded_count = len(new_tools)
-        self.logger.info(i18n.get('skills_reloaded', loaded_count))
-        return loaded_count
+        if self.skill_manager is not None:
+            count = self.skill_manager.reload()
+            self.logger.info(i18n.get('skills_reloaded', count))
+            return count
+        self.logger.warning("skill_manager 未初始化，无法重载技能")
+        return 0
     
     def get_skills_count(self) -> Tuple[int, int]:
         """获取内置工具和扩展技能的数量"""
@@ -3750,170 +3773,186 @@ class ToolRegistry:
         return builtin_count, skill_count
 
 
-# ==================== 技能加载器（新增：解耦扩展技能） ====================
+# ==================== 扩展技能管理器 ====================
 
-class SkillLoader:
-    """技能加载器 - 负责从技能目录发现并实例化扩展工具
+class SkillManager:
+    """扩展技能管理器 - 收集并管理 ~/.aibox/skills/ 目录下的可执行技能。
     
-    解耦点：
-    - 技能发现逻辑集中在此类，不再散落在 ToolRegistry / DeepSeekChat 中
-    - 支持 Python 模块（.py）和可执行脚本两种形式
-    - ToolRegistry 只负责注册，不再关心技能文件如何加载
+    启动时对所有技能执行 --help，收集第一行作为简介摘要。
     """
 
-    def __init__(self, skills_dir: str = None, logger: Logger = None):
-        self.skills_dir = skills_dir or constants.SKILLS_DIR
-        self.logger = logger or Logger("SkillLoader")
+    def __init__(self, logger: Optional[Logger] = None):
+        self.logger = logger or Logger("SkillManager")
+        # name -> {path, file, summary}
+        self.skills: Dict[str, Dict] = {}
+        self._load_skills()
 
-    def discover(self) -> List['Tool']:
-        """扫描技能目录，返回已实例化的工具列表"""
-        tools: List[Tool] = []
-        if not os.path.exists(self.skills_dir):
-            return tools
+    # ------------------------------------------------------------------
+    # 内部辅助
+    # ------------------------------------------------------------------
 
-        for fname in os.listdir(self.skills_dir):
-            fpath = os.path.join(self.skills_dir, fname)
-            if not os.path.isfile(fpath) or fname.startswith("_"):
-                continue
-            try:
-                tool = ExtensionTool(fname, self.logger)
-                tools.append(tool)
-                self.logger.info(f"已发现扩展技能: {tool.get_name()}")
-            except Exception as e:
-                self.logger.error(f"加载技能 {fname} 失败: {e}")
-
-        return tools
-
-
-# ==================== 扩展工具类（重构：降低耦合，修复注入漏洞） ====================
-
-class ExtensionTool(Tool):
-    """扩展工具类 - 动态加载外部技能（支持流式输出）
-    
-    变更说明（降低耦合）：
-    - 不再直接读取 constants.SKILLS_DIR，路径由调用方传入
-    - 参数通过 --args-json <json> 传递，避免 shell 注入
-    - 描述/参数元信息在构造时一次性获取并缓存
-    """
-    
-    def __init__(self, skill_file: str, logger: Optional[Logger] = None,
-                 skills_dir: str = None):
-        super().__init__(logger)
-        self.skill_file = skill_file
-        # 允许外部指定目录，降低对全局 constants 的直接依赖
-        self.skills_dir = skills_dir or constants.SKILLS_DIR
-        self.skill_path = os.path.join(self.skills_dir, skill_file)
-        self._name = os.path.splitext(skill_file)[0]
-        self._description = self._get_description()
-        self._parameters = self._get_parameters()
-    
-    def _build_cmd_prefix(self) -> List[str]:
-        """构建执行命令前缀（支持 .py 和可执行脚本）"""
-        if self.skill_path.endswith(".py"):
-            return [sys.executable, self.skill_path]
-        return [self.skill_path]
-
-    def _run_skill_command(self, args: List[str], timeout: int = 10) -> str:
-        """安全地运行技能命令并返回输出（不使用 shell=True）"""
+    def _run_help(self, skill_path: str) -> str:
+        """执行 skill_path --help 并返回完整输出（stdout 优先，否则 stderr）。"""
         try:
             result = subprocess.run(
-                args,
-                shell=False,          # 不使用 shell，避免注入
+                [skill_path, "--help"],
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=10,
                 env=os.environ.copy()
             )
-            return result.stdout.strip()
-        except FileNotFoundError:
-            self.logger.error(f"技能文件不存在或不可执行: {self.skill_path}")
-            return f"Error: 技能文件不存在或不可执行"
+            output = result.stdout.strip()
+            if not output:
+                output = result.stderr.strip()
+            return output
         except Exception as e:
-            self.logger.error(f"运行技能命令失败: {e}")
-            return f"Error: {str(e)}"
-    
-    def _get_description(self) -> str:
-        """获取技能描述"""
-        return self._run_skill_command(self._build_cmd_prefix() + ["--description"])
+            self.logger.warning(f"运行 {skill_path} --help 失败: {e}")
+            return ""
 
-    def _get_parameters(self) -> Dict:
-        """获取技能参数定义（JSON Schema格式）"""
-        output = self._run_skill_command(self._build_cmd_prefix() + ["--parameters"])
-        try:
-            return json.loads(output)
-        except json.JSONDecodeError:
-            self.logger.warning(f"技能 {self._name} 的参数返回不是有效的JSON")
-            return {
-                "type": "object",
-                "properties": {
-                    "args": {
-                        "type": "string",
-                        "description": "传递给技能的命令行参数（JSON格式）"
-                    }
-                },
-                "required": ["args"]
+    @staticmethod
+    def _first_nonempty_line(text: str) -> str:
+        """返回文本中第一行非空内容。"""
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped:
+                return stripped
+        return ""
+
+    # ------------------------------------------------------------------
+    # 加载 / 重载
+    # ------------------------------------------------------------------
+
+    def _load_skills(self):
+        """扫描技能目录，对每个技能执行 --help 收集简介。"""
+        skills_dir = constants.SKILLS_DIR
+        self.skills = {}
+
+        if not os.path.exists(skills_dir):
+            return
+
+        skill_files = [
+            f for f in os.listdir(skills_dir)
+            if os.path.isfile(os.path.join(skills_dir, f))
+            and not f.startswith("_")
+        ]
+
+        for skill_file in skill_files:
+            skill_path = os.path.join(skills_dir, skill_file)
+            skill_name = os.path.splitext(skill_file)[0]
+
+            # 确保文件可执行
+            if not os.access(skill_path, os.X_OK):
+                self.logger.warning(f"技能文件不可执行（跳过）: {skill_file}")
+                continue
+
+            help_output = self._run_help(skill_path)
+            summary = self._first_nonempty_line(help_output) or f"扩展技能: {skill_name}"
+
+            self.skills[skill_name] = {
+                "path": skill_path,
+                "file": skill_file,
+                "summary": summary,
             }
-    
+            self.logger.info(f"已加载技能: {skill_name} — {summary}")
+
+        self.logger.info(f"共加载 {len(self.skills)} 个扩展技能")
+
+    def reload(self) -> int:
+        """重新扫描技能目录，返回加载的技能数量。"""
+        self._load_skills()
+        return len(self.skills)
+
+    # ------------------------------------------------------------------
+    # 查询
+    # ------------------------------------------------------------------
+
+    def search(self, keyword: str) -> List[Dict]:
+        """在技能名称和简介中搜索关键字，返回匹配项列表。"""
+        kw = keyword.lower()
+        return [
+            {"name": name, "path": info["path"], "summary": info["summary"]}
+            for name, info in self.skills.items()
+            if kw in name.lower() or kw in info["summary"].lower()
+        ]
+
+    def get_all(self) -> List[Dict]:
+        """返回所有技能的列表（含名称、路径和简介）。"""
+        return [
+            {"name": name, "path": info["path"], "summary": info["summary"]}
+            for name, info in self.skills.items()
+        ]
+
+    def count(self) -> int:
+        return len(self.skills)
+
+
+# ==================== 扩展技能搜索工具 ====================
+
+class SearchSkillsTool(Tool):
+    """扩展技能搜索工具 - 按关键字搜索 ~/.aibox/skills/ 下的可执行技能。
+
+    工作流程：
+    1. 用关键字调用本工具，获取匹配技能的名称和简介列表。
+    2. 对感兴趣的技能，通过 run_command 执行 "技能名 --help" 查看完整命令手册。
+    3. 根据手册，使用 run_command 工具按照正确的命令行格式调用该技能。
+    """
+
+    def __init__(self, skill_manager: SkillManager, logger: Optional[Logger] = None):
+        super().__init__(logger)
+        self.skill_manager = skill_manager
+
     def get_name(self) -> str:
-        return self._name
-    
+        return "search_skills"
+
     def get_description(self) -> str:
-        return self._description
-    
+        return (
+            "扩展技能搜索工具。\n\n"
+            "用关键字搜索 ~/.aibox/skills/ 目录下的可执行扩展技能，"
+            "返回匹配技能的名称和一行简介。\n\n"
+            "使用方法：\n"
+            "1. 调用本工具搜索关键字，获取技能列表（空字符串列出全部）。\n"
+            "2. 对目标技能用 run_command 执行 \"技能名 --help\" 获取完整命令手册。\n"
+            "3. 按照手册，用 run_command 以正确的命令行格式调用该技能。"
+        )
+
     def get_parameters(self) -> Dict:
-        return self._parameters
-    
-    def execute(self, **kwargs) -> str:
-        """执行技能（非流式）- 通过 --args-json 传参，避免 shell 注入"""
-        args_json = json.dumps(kwargs, ensure_ascii=False)
-        cmd = self._build_cmd_prefix() + ["--execute", "--args-json", args_json]
-        self.logger.debug(f"执行扩展工具: {self._name}, 参数长度: {len(args_json)}")
-        return self._run_skill_command(cmd, timeout=60)
-    
-    def execute_streaming(self, output_queue: queue.Queue, **kwargs):
-        """流式执行技能 - 实时输出到WebSocket"""
-        args_json = json.dumps(kwargs, ensure_ascii=False)
-        cmd = self._build_cmd_prefix() + ["--execute", "--args-json", args_json]
-        
-        output_queue.put(("line", f"\n🔧 执行扩展技能: {self._name}\n"))
-        output_queue.put(("line", "-" * 50 + "\n"))
-        
-        try:
-            process = subprocess.Popen(
-                cmd,
-                shell=False,           # 不使用 shell
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True,
-                env=os.environ.copy()
+        return {
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": (
+                        "搜索关键字，在技能名称和简介中进行匹配。"
+                        "传入空字符串可列出全部可用技能。"
+                    )
+                }
+            },
+            "required": ["keyword"]
+        }
+
+    def execute(self, keyword: str = "", **kwargs) -> str:
+        kw = keyword.strip()
+        if kw:
+            results = self.skill_manager.search(kw)
+            header = f"🔍 搜索 '{kw}' 的结果（共 {len(results)} 个匹配技能）："
+            empty_msg = (
+                f"❌ 未找到与 '{kw}' 相关的技能。\n"
+                "提示：传入空字符串可列出所有可用技能。"
             )
-            
-            output_lines = []
-            
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-                if line:
-                    line = line.rstrip('\n')
-                    output_queue.put(("line", line + "\n"))
-                    output_lines.append(line)
-            
-            return_code = process.wait()
-            
-            output_queue.put(("line", "-" * 50 + "\n"))
-            output_queue.put(("line", f"✅ 技能执行完成，返回码: {return_code}\n"))
-            
-            full_output = "\n".join(output_lines)
-            result = self.format_result(return_code == 0, "技能执行完成", {"输出": full_output})
-            output_queue.put(("complete", result))
-            
-        except Exception as e:
-            error_msg = f"❌ 技能执行错误: {str(e)}"
-            output_queue.put(("line", error_msg + "\n"))
-            output_queue.put(("complete", error_msg))
+        else:
+            results = self.skill_manager.get_all()
+            header = f"🔧 所有可用扩展技能（共 {len(results)} 个）："
+            empty_msg = "❌ ~/.aibox/skills/ 目录下暂无可用技能。"
+
+        if not results:
+            return empty_msg
+
+        lines = [header]
+        for item in results:
+            lines.append(f"  • {item['name']} — {item['summary']}")
+        lines.append("")
+        lines.append("💡 提示：用 run_command 执行 \"技能名 --help\" 可获取完整命令手册。")
+        return "\n".join(lines)
 
 
 # ==================== 技能热重载工具 ====================
@@ -3955,22 +3994,26 @@ class ReloadSkillsTool(Tool):
         try:
             count = self.tool_registry.reload_skills()
             
-            # 获取更新后的技能列表
-            skills_dir = constants.SKILLS_DIR
-            skills_list = []
-            if os.path.exists(skills_dir):
-                skills_list = [f for f in os.listdir(skills_dir) 
-                              if os.path.isfile(os.path.join(skills_dir, f)) 
-                              and not f.startswith("_")]
-            
-            data = {
-                "重新加载的技能数量": count,
-                "技能文件列表": skills_list[:10],  # 只显示前10个
-                "技能目录": skills_dir
-            }
-            
-            if len(skills_list) > 10:
-                data["提示"] = f"还有 {len(skills_list)-10} 个技能未显示"
+            # 从 SkillManager 获取更新后的技能列表（含简介）
+            skill_manager = self.tool_registry.skill_manager
+            if skill_manager:
+                all_skills = skill_manager.get_all()
+                skill_lines = "\n".join(
+                    f"  • {s['name']} — {s['summary']}"
+                    for s in all_skills[:10]
+                )
+                data = {
+                    "重新加载的技能数量": count,
+                    "技能目录": constants.SKILLS_DIR,
+                    "技能列表（含简介）": skill_lines or "（无技能）",
+                }
+                if count > 10:
+                    data["提示"] = f"还有 {count - 10} 个技能未显示"
+            else:
+                data = {
+                    "重新加载的技能数量": count,
+                    "技能目录": constants.SKILLS_DIR,
+                }
             
             return self.format_result(True, i18n.get('skills_reloaded', count), data)
             
@@ -3985,166 +4028,6 @@ class ReloadSkillsTool(Tool):
         
         result = self.execute(**kwargs)
         
-        output_queue.put(("line", result + "\n"))
-        output_queue.put(("complete", result))
-
-
-# ==================== 创建扩展技能工具（新增：让AI自己编写技能） ====================
-
-class CreateSkillTool(Tool):
-    """创建扩展技能工具 - AI可自行编写并保存新技能到 skills 目录
-    
-    技能文件需实现三个命令行接口：
-      --description   输出技能描述字符串
-      --parameters    输出 JSON Schema 参数定义
-      --execute --args-json <json>  执行技能逻辑，从 --args-json 读取参数
-    """
-
-    def __init__(self, tool_registry: ToolRegistry, logger: Optional[Logger] = None):
-        super().__init__(logger)
-        self.tool_registry = tool_registry
-
-    def get_name(self) -> str:
-        return "create_skill"
-
-    def get_description(self) -> str:
-        return """创建新的扩展技能 - 将Python脚本写入 ~/.aibox/skills/ 目录并立即热加载
-技能脚本必须实现以下三个命令行接口：
-  python skill.py --description         -> 输出技能描述
-  python skill.py --parameters          -> 输出 JSON Schema 参数定义（纯JSON）
-  python skill.py --execute --args-json '{"key":"value"}' -> 执行技能逻辑
-
-创建后会自动调用 reload_skills 使技能立即生效，无需重启。"""
-
-    def get_parameters(self) -> Dict:
-        return {
-            "type": "object",
-            "properties": {
-                "skill_name": {
-                    "type": "string",
-                    "description": "技能名称（不含.py后缀，只能包含字母/数字/下划线）"
-                },
-                "skill_code": {
-                    "type": "string",
-                    "description": "完整的 Python 技能脚本代码"
-                },
-                "overwrite": {
-                    "type": "boolean",
-                    "description": "如果技能已存在是否覆盖（默认False）",
-                    "default": False
-                }
-            },
-            "required": ["skill_name", "skill_code"]
-        }
-
-    # 最小可用技能模板，供 AI 参考
-    SKILL_TEMPLATE = '''#!/usr/bin/env python3
-"""示例技能模板"""
-import sys
-import json
-
-DESCRIPTION = "这里写技能描述"
-
-PARAMETERS = {
-    "type": "object",
-    "properties": {
-        "input": {
-            "type": "string",
-            "description": "输入参数"
-        }
-    },
-    "required": ["input"]
-}
-
-def execute(args: dict) -> str:
-    """技能执行逻辑"""
-    input_val = args.get("input", "")
-    return f"处理结果: {input_val}"
-
-if __name__ == "__main__":
-    if "--description" in sys.argv:
-        print(DESCRIPTION)
-    elif "--parameters" in sys.argv:
-        print(json.dumps(PARAMETERS, ensure_ascii=False))
-    elif "--execute" in sys.argv:
-        try:
-            idx = sys.argv.index("--args-json")
-            args = json.loads(sys.argv[idx + 1])
-        except (ValueError, IndexError, json.JSONDecodeError):
-            args = {}
-        print(execute(args))
-    else:
-        print("用法: skill.py [--description|--parameters|--execute --args-json \\'{}\\']")
-'''
-
-    def execute(self, skill_name: str = None, skill_code: str = None,
-                overwrite: bool = False, **kwargs) -> str:
-        if not skill_name:
-            return "❌ 需要提供技能名称"
-        if not skill_code:
-            return "❌ 需要提供技能代码"
-
-        # 校验技能名称
-        import re as _re
-        if not _re.match(r'^[a-zA-Z0-9_]+$', skill_name):
-            return "❌ 技能名称只能包含字母、数字和下划线"
-
-        skills_dir = constants.SKILLS_DIR
-        os.makedirs(skills_dir, exist_ok=True)
-        skill_path = os.path.join(skills_dir, f"{skill_name}.py")
-
-        if os.path.exists(skill_path) and not overwrite:
-            return (f"❌ 技能 '{skill_name}' 已存在。"
-                    f"如需覆盖请设置 overwrite=true")
-
-        # 写入文件
-        try:
-            with open(skill_path, 'w', encoding='utf-8') as f:
-                f.write(skill_code)
-            os.chmod(skill_path, 0o755)
-        except Exception as e:
-            return f"❌ 写入技能文件失败: {e}"
-
-        # 验证技能接口可用
-        validation_errors = []
-        for flag in ["--description", "--parameters"]:
-            try:
-                result = subprocess.run(
-                    [sys.executable, skill_path, flag],
-                    capture_output=True, text=True, timeout=10,
-                    env=os.environ.copy()
-                )
-                if result.returncode != 0 or not result.stdout.strip():
-                    validation_errors.append(f"{flag} 接口返回为空或出错")
-            except Exception as e:
-                validation_errors.append(f"{flag} 接口执行失败: {e}")
-
-        if validation_errors:
-            # 接口验证失败，删除文件并返回错误
-            try:
-                os.remove(skill_path)
-            except Exception:
-                pass
-            return ("❌ 技能接口验证失败，文件已删除。请检查代码：\n"
-                    + "\n".join(f"  - {e}" for e in validation_errors)
-                    + f"\n\n参考模板：\n{self.SKILL_TEMPLATE}")
-
-        # 热重载使技能立即生效
-        try:
-            count = self.tool_registry.reload_skills()
-        except Exception as e:
-            return (f"⚠️ 技能文件已创建但热重载失败: {e}。"
-                    f"请手动调用 reload_skills 工具。")
-
-        return self.format_result(True, f"技能 '{skill_name}' 已创建并加载", {
-            "文件路径": skill_path,
-            "当前扩展技能总数": count
-        })
-
-    def execute_streaming(self, output_queue: queue.Queue, **kwargs):
-        output_queue.put(("line", f"\n🔨 创建扩展技能: {kwargs.get('skill_name', '')}\n"))
-        output_queue.put(("line", "-" * 50 + "\n"))
-        result = self.execute(**kwargs)
         output_queue.put(("line", result + "\n"))
         output_queue.put(("complete", result))
 
@@ -6046,22 +5929,19 @@ class CommandLineTool(Tool):
             except Exception as e:
                 return f"❌ 执行错误: {str(e)}"
 
-# ==================== AI聊天类（支持取消操作） ====================
+# ==================== AI聊天类（修改版：添加重置对话记忆和重新加载系统提示词功能，压缩静默执行） ====================
 
-class DeepSeekChatAsync:
-    """异步AI聊天类 - 支持真正的取消操作（基于 aiohttp + asyncio）"""
+class DeepSeekChat:
+    """单AI聊天类"""
     
     def __init__(self, api_key: str = None, max_history: int = None,
-                 system_prompt: str = None, debug_level: int = None, 
-                 exit_callback: Callable = None,
-                 history_manager: ConversationHistory = None, 
-                 memory_db: MemoryDatabase = None,
-                 memo_db: MemoDatabase = None, 
-                 command_executor: CommandExecutor = None,
+                 system_prompt: str = None, debug_level: int = None, exit_callback: Callable = None,
+                 history_manager: ConversationHistory = None, memory_db: MemoryDatabase = None,
+                 memo_db: MemoDatabase = None, command_executor: CommandExecutor = None,
                  prompt_manager: PromptManager = None):
-        
         self.name = "DeepSeek"
-        self.logger = Logger(self.name, debug_level)
+        self.debug_level = debug_level if debug_level is not None else Logger("").level
+        self.logger = Logger(self.name, self.debug_level)
         self.config = ConfigManager()
         self.history_manager = history_manager
         self.memory_db = memory_db
@@ -6070,17 +5950,11 @@ class DeepSeekChatAsync:
         self.history_loaded = False
         self.conversation_active = True
         self.messages = []
-
-        # ============ 取消控制相关（增强版） ============
-        self._cancel_requested = False
-        self._session_cancelled = False  # 新增：会话级别取消标志，不会被重置
-        self._current_task: Optional[asyncio.Task] = None
-        self._current_session: Optional[aiohttp.ClientSession] = None
-        self._current_response: Optional[aiohttp.ClientResponse] = None
-        self._current_request_id: Optional[str] = None
         
-        # API配置
-        api_key_env = self.config.get("api.api_key_env", "DEEPSEEK_API_KEY")
+        # 添加对话压缩器
+        self.compressor = ConversationCompressor(self, self.logger)
+        
+        api_key_env = self.config.get("api.api_key_env")
         self.api_key = api_key or os.environ.get(api_key_env)
         if not self.api_key:
             try:
@@ -6093,22 +5967,19 @@ class DeepSeekChatAsync:
         self.preserve_system = constants.PRESERVE_SYSTEM_PROMPTS
         self.stats = {"api_calls": 0, "tool_calls": 0, "errors": []}
         
-        # 初始化系统提示词
         self._init_system_prompts(system_prompt)
         
-        # 注册工具
         self.tool_registry = ToolRegistry(self.logger)
         self._register_tools(exit_callback, command_executor)
-        
-        # 对话压缩器
-        self.compressor = ConversationCompressor(self, self.logger)
     
     def _init_system_prompts(self, system_prompt: str = None):
-        """初始化系统提示词"""
+        """初始化系统提示词 - 从 PromptManager 加载"""
         if system_prompt:
+            # 如果明确指定了 system_prompt，使用它
             self._add_message("system", system_prompt)
             self.logger.info("使用指定的系统提示词")
         else:
+            # 从 PromptManager 加载所有提示词
             prompts = self.prompt_manager.get_prompts_list()
             if prompts:
                 for prompt in prompts:
@@ -6116,17 +5987,17 @@ class DeepSeekChatAsync:
                         self._add_message("system", prompt['content'].strip())
                 self.logger.info(f"已加载 {len(prompts)} 个系统提示词")
             else:
+                # 如果没有任何提示词，添加一个默认的
                 default_prompt = "你是一个智能AI助手。"
                 self._add_message("system", default_prompt)
                 self.logger.info("使用默认系统提示词")
     
     def _register_tools(self, exit_callback: Callable = None, command_executor: CommandExecutor = None):
-        """注册工具（与同步版本相同）"""
-        
+        # 内置工具列表
         builtin_tools = [
             GetCurrentTimeTool(self.logger),
             CalculatorTool(self.logger),
-            CommandLineTool(command_executor, self.logger),
+            CommandLineTool(command_executor or SubprocessCommandExecutor(self.logger), self.logger),
             ReadFileTool(self.logger),
             WriteFileTool(self.logger),
             ListFilesTool(self.logger),
@@ -6139,41 +6010,75 @@ class DeepSeekChatAsync:
         if self.memo_db:
             builtin_tools.append(MemoTool(self.memo_db, self.logger))
         
+        # 更新身份工具
         builtin_tools.append(UpdateIdentityTool(self.prompt_manager, self.logger))
+        
+        # 新增：更新智能体自我认识工具
         builtin_tools.append(UpdateSoulTool(self.prompt_manager, self.logger))
         
+        # 增强版保存记忆并结束对话工具
         if exit_callback and self.memory_db:
             builtin_tools.append(SaveMemoryAndEndConversationTool(exit_callback, self.memory_db, self.prompt_manager, self.logger))
         
+        # 添加技能热重载工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
-        builtin_tools.append(CreateSkillTool(self.tool_registry, self.logger))
         
+        # 注册内置工具（标记为内置）
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
         
-        # 加载扩展技能
-        loader = SkillLoader(constants.SKILLS_DIR, self.logger)
-        for extool in loader.discover():
-            self.tool_registry.register(extool, is_builtin=False)
+        # 创建技能管理器：启动时对每个技能执行 --help，收集第一行简介
+        skill_manager = SkillManager(self.logger)
+        self.tool_registry.skill_manager = skill_manager
+        
+        # 注册扩展技能搜索工具（单一工具，替代逐个注册 ExtensionTool）
+        search_tool = SearchSkillsTool(skill_manager, self.logger)
+        self.tool_registry.register(search_tool, is_builtin=True)
         
         builtin_count, skill_count = self.tool_registry.get_skills_count()
-        self.logger.info(f"已注册工具: 内置 {builtin_count} 个, 扩展技能 {skill_count} 个")
+        self.logger.info(f"已注册工具: 内置 {builtin_count} 个, 扩展技能 {skill_manager.count()} 个（通过 search_skills 工具访问）")
+    
+    def _load_history_context(self):
+        """加载历史对话作为上下文"""
+        if self.history_loaded or not self.history_manager:
+            return
+        
+        context = self.history_manager.get_conversation_context()
+        if context:
+            history_prompt = f"""以下是之前的对话历史，请基于这些历史继续对话。
+如果问题涉及到之前的对话内容，请参考这些历史记录。
+当前时间: {datetime.now().strftime(constants.DATETIME_FORMAT)}"""
+            
+            self._add_message("system", history_prompt)
+            
+            for msg in context:
+                self.messages.append(msg)
+            
+            self.history_loaded = True
+            self.logger.info(f"已加载 {len(context)} 条历史消息")
     
     def _add_message(self, role: str, content: str):
-        """添加消息到历史"""
+        """
+        添加消息到历史
+        - 用户消息：添加时间戳前缀
+        - 助手消息：不添加时间戳前缀
+        """
         timestamp = datetime.now().strftime(constants.DATETIME_FORMAT)
         
         if role == "assistant":
+            # 助手消息：不添加时间戳前缀，直接保存原始内容
             formatted_content = content
         elif role == "user":
+            # 用户消息：添加时间戳前缀
             formatted_content = f"[用户 @ {timestamp}] {content}"
         else:
+            # 系统消息：保持原样
             formatted_content = content
         
         self.messages.append({"role": role, "content": formatted_content})
         self._cleanup_messages()
     
     def _cleanup_messages(self):
-        """清理消息历史"""
+        """清理消息历史，但保留系统提示词"""
         if len(self.messages) <= self.max_history * 2:
             return
         
@@ -6185,120 +6090,45 @@ class DeepSeekChatAsync:
         else:
             self.messages = self.messages[-self.max_history * 2:]
     
-    def cancel_session(self) -> bool:
-        """取消整个会话 - 这个标志不会被重置"""
-        self.logger.info("取消整个会话...")
-        self._session_cancelled = True
-        self._cancel_requested = True
-        self.conversation_active = False
-        return self.cancel_current_response()
-
-    def is_session_cancelled(self) -> bool:
-        """检查会话是否被取消"""
-        return self._session_cancelled
-
-    def reset_cancel_state(self):
-        """重置取消状态（但保留会话取消标志）"""
-        self._cancel_requested = False
-        # 注意：不重置 _session_cancelled
-        self._current_task = None
-        self._current_response = None
-        self._current_session = None
-        # 生成新的请求ID
-        self._current_request_id = str(uuid.uuid4())
-
-    def reset_session(self):
-        """重置会话状态（用于 /new 命令）"""
-        self._session_cancelled = False
-        self._cancel_requested = False
-        self.conversation_active = True
-        self.reset_conversation(reload_prompts=True)
-        self.logger.info("会话状态已重置")
-
-    def cancel_current_response(self) -> bool:
-        """取消当前正在进行的响应 - 真正的异步取消"""
-        self.logger.info("开始取消当前响应...")
+    def _save_tool_result_to_file(self, tool_name: str, result: str) -> str:
+        """
+        将工具返回结果保存到文件，返回文件路径
+        """
+        # 创建工具结果目录
+        tool_results_dir = os.path.join(constants.SAVE_DIR, "tool_results")
+        os.makedirs(tool_results_dir, exist_ok=True)
         
-        # 1. 设置取消标志
-        self._cancel_requested = True
-        self.conversation_active = False
+        # 生成文件名：日期时间_工具名_哈希前8位.json
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 使用简单的哈希来避免文件名冲突
+        import hashlib
+        hash_suffix = hashlib.md5(result[:100].encode()).hexdigest()[:8]
+        safe_tool_name = re.sub(r'[^\w\-]', '_', tool_name)
+        filename = f"{timestamp}_{safe_tool_name}_{hash_suffix}.txt"
+        filepath = os.path.join(tool_results_dir, filename)
         
-        # 2. 生成新的请求ID（使旧的回调失效）
-        self._current_request_id = str(uuid.uuid4())
-        
-        # 3. 取消当前的 asyncio Task
-        if self._current_task and not self._current_task.done():
-            self._current_task.cancel()
-            self.logger.debug("已取消 asyncio Task")
-        
-        # 4. 关闭当前的 HTTP 响应（强制中断连接）
-        if self._current_response:
-            try:
-                self._current_response.close()
-                self.logger.debug("已关闭 HTTP 响应")
-            except Exception as e:
-                self.logger.debug(f"关闭响应失败: {e}")
-            finally:
-                self._current_response = None
-        
-        # 5. 关闭当前的 ClientSession
-        if self._current_session and not self._current_session.closed:
-            try:
-                # 创建一个任务来关闭session，不等待
-                asyncio.create_task(self._close_session_async())
-            except Exception as e:
-                self.logger.debug(f"关闭session失败: {e}")
-        
-        self.logger.info("用户取消了当前响应")
-        return True
-    
-    async def _close_session_async(self):
-        """异步关闭session"""
-        if self._current_session and not self._current_session.closed:
-            try:
-                await self._current_session.close()
-            except Exception as e:
-                self.logger.debug(f"关闭session异常: {e}")
-    
-    def is_cancelled(self) -> bool:
-        """检查是否被取消"""
-        return self._cancel_requested or not self.conversation_active
-    
-    def reset_cancel_state(self):
-        """重置取消状态"""
-        self._cancel_requested = False
-        self.conversation_active = True
-        self._current_task = None
-        self._current_response = None
-        self._current_session = None
-    
-    def reset_conversation(self, reload_prompts: bool = True):
-        """重置对话状态"""
-        self.conversation_active = True
-        self.history_loaded = False
-        self._cancel_requested = False
-        
-        if reload_prompts:
-            self.messages = []
-            self._init_system_prompts()
-            self.logger.info("对话已完全重置，系统提示词已重新加载")
-        else:
-            if self.preserve_system:
-                system_messages = [msg for msg in self.messages if msg["role"] == "system"]
-                self.messages = system_messages
+        try:
+            # 保存结果到文件
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(result)
+            
+            # 记录日志
+            result_size = len(result)
+            size_kb = result_size / 1024
+            if size_kb > 1024:
+                size_str = f"{size_kb/1024:.1f}MB"
             else:
-                self.messages = []
-            self.logger.info("对话已重置（仅清除对话历史）")
-        
-    async def _handle_tool_calls_async(self, tool_calls: List[Dict], 
-                                        output_callback: Callable = None) -> List[Dict]:
-        """异步处理工具调用 - 支持取消"""
+                size_str = f"{size_kb:.1f}KB"
+            self.logger.info(f"工具 {tool_name} 返回结果过大 ({size_str})，已保存到: {filepath}")
+            
+            return filepath
+        except Exception as e:
+            self.logger.error(f"保存工具结果失败: {e}")
+            return None
+
+    def _handle_tool_calls(self, tool_calls: List[Dict], output_callback: Callable = None) -> List[Dict]:
+        """处理工具调用 - 所有工具的输出都进行发送，并在开始和结束时发送两个回车"""
         if not tool_calls:
-            return []
-        
-        if self.is_cancelled():
-            if output_callback:
-                await output_callback("line", "\n\n⛔ 用户已终止操作\n")
             return []
         
         self.stats["tool_calls"] += len(tool_calls)
@@ -6308,15 +6138,10 @@ class DeepSeekChatAsync:
         output_queue = queue.Queue()
         self.tool_registry.set_output_queue(output_queue)
         
+        # 结果大小阈值（字符数），从配置获取
         MAX_RESULT_LENGTH = constants.TOOL_MAX_RESULT_LENGTH
         
         for tool_call in tool_calls:
-            # 每个工具调用前都检查取消状态
-            if self.is_cancelled():
-                if output_callback:
-                    await output_callback("line", "\n\n⛔ 用户已终止操作\n")
-                break
-            
             function = tool_call.get("function", {})
             tool_name = function.get("name")
             arguments = function.get("arguments", "{}")
@@ -6326,41 +6151,62 @@ class DeepSeekChatAsync:
             except json.JSONDecodeError:
                 args = {}
             
+            # 【修改】开始调用工具时发送两个回车
             if output_callback:
-                await output_callback("line", "\n\n")
-                await output_callback("line", f"🔧 调用工具: {tool_name}\n")
+                output_callback("line", "\n\n")
+                output_callback("line", f"🔧 调用工具: {tool_name}\n")
             
-            # 在线程池中执行工具（因为工具可能是同步的）
-            loop = asyncio.get_running_loop()
+            # 对于支持流式输出的工具，检查是否需要流式输出
+            tool = self.tool_registry.get_tool(tool_name)
+            supports_streaming = hasattr(tool, 'execute_streaming') if tool else False
             
-            def execute_tool_sync():
-                return self.tool_registry.execute_tool(tool_name, **args)
-            
-            # 执行工具，带超时
-            try:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, execute_tool_sync),
-                    timeout=60
+            result = None
+            if supports_streaming and args.get("stream", True):
+                # 在新线程中执行工具 - 修复参数传递问题
+                thread = threading.Thread(
+                    target=lambda: self.tool_registry.execute_tool(tool_name, **args)
                 )
-            except asyncio.TimeoutError:
-                result = f"❌ 工具 {tool_name} 执行超时（60秒）"
+                thread.daemon = True
+                thread.start()
+                
+                # 实时处理输出 - 确保所有输出都被发送
+                result_lines = []
+                while thread.is_alive() or not output_queue.empty():
+                    try:
+                        msg_type, content = output_queue.get(timeout=0.1)
+                        if msg_type == "line":
+                            if output_callback:
+                                # 确保所有行都发送
+                                output_callback("line", content)
+                            result_lines.append(content)
+                        elif msg_type == "complete":
+                            result = content
+                            result_lines.append(content)
+                    except queue.Empty:
+                        continue
+                
+                result = "".join(result_lines) if result is None else result
+            else:
+                # 普通执行 - 修复参数传递问题
+                result = self.tool_registry.execute_tool(tool_name, **args)
+                # 普通执行也发送结果
+                if output_callback and result:
+                    output_callback("line", result + "\n")
             
-            if output_callback and result:
-                await output_callback("line", result + "\n")
-            
+            # 检查结果大小，如果超过阈值，不返回结果，只返回提示信息
             if result and len(result) > MAX_RESULT_LENGTH:
-                result = f"⚠️ 工具 {tool_name} 执行结果过大（{len(result)} 字符），超过限制（{MAX_RESULT_LENGTH} 字符），已放弃返回结果。"
+                # 不保存文件，直接返回提示信息
+                result = f"⚠️ 工具 {tool_name} 执行结果过大（{len(result)} 字符），超过限制（{MAX_RESULT_LENGTH} 字符），已放弃返回结果。\n\n请考虑：\n1. 使用更精确的查询条件\n2. 使用其他工具获取部分数据\n3. 优化查询方式减少结果数量"
                 if output_callback:
-                    await output_callback("line", result + "\n")
+                    output_callback("line", result + "\n")
             
+            # 【修改】结束调用工具时发送两个回车
             if output_callback:
-                await output_callback("line", "\n\n")
+                output_callback("line", "\n\n")
             
-            # 记录到历史
             if self.history_manager:
                 self.history_manager.add_tool_call(tool_name, args, result[:200] + "..." if len(result) > 200 else result)
             
-            # 检查是否是结束对话的工具
             if tool_name == "save_memory_and_end_conversation" and "✅" in result:
                 self.logger.info("检测到保存记忆并结束对话工具调用")
                 self.conversation_active = False
@@ -6369,6 +6215,7 @@ class DeepSeekChatAsync:
                     "tool_call_id": tool_call.get("id"),
                     "content": result
                 })
+                # 【修复】不直接返回，而是添加后继续处理，但设置标志让后续停止
                 break
             
             tool_messages.append({
@@ -6377,31 +6224,36 @@ class DeepSeekChatAsync:
                 "content": result
             })
         
+        # 清除输出队列
         self.tool_registry.set_output_queue(None)
+        
         return tool_messages
 
-
-    async def think_and_respond(self, input_text: str, 
-                                output_callback: Callable = None) -> Optional[str]:
-        """
-        异步思考并回应 - 使用独立读取任务实现真正的立即取消
-        """
+    def _should_search_memory(self, user_input: str) -> bool:
+        """判断是否应该搜索记忆"""
+        # 检查用户输入是否包含搜索意图的关键词
+        search_triggers = [
+            '还记得', '之前', '上次', '以前', '我们说过', '我们讨论过',
+            '你记得', '你还记得', '我们聊过', '我们谈到', '我们之前',
+            '根据之前的', '依据历史', 'refer', 'previous', 'before',
+            'last time', 'earlier', '曾经', '过往'
+        ]
         
-        # 检查会话是否已被取消
-        if self.is_session_cancelled():
-            self.logger.debug("会话已被取消，拒绝处理新请求")
-            if output_callback:
-                await output_callback("line", "\n\n⛔ 会话已被终止，请开始新对话\n")
-            return None
+        user_input_lower = user_input.lower()
+        for trigger in search_triggers:
+            if trigger.lower() in user_input_lower:
+                return True
         
-        # 重置请求级别的取消状态
-        self._cancel_requested = False
+        # 检查是否是简单问候（可能不需要搜索）
+        greetings = ['你好', '您好', '嗨', 'hello', 'hi', 'hey']
+        if user_input_lower.strip() in greetings:
+            return False
         
-        # 生成当前请求的唯一ID
-        request_id = str(uuid.uuid4())
-        self._current_request_id = request_id
-        
-        # 检查对话是否活跃
+        # 默认情况下，如果记忆库存在，搜索一下也无妨
+        return True
+    
+    def think_and_respond(self, input_text: str, output_callback: Callable = None) -> Optional[str]:
+        """思考并回应 - 支持实时流式输出"""
         if not self.conversation_active:
             self.logger.info("对话已结束，重置状态")
             self.conversation_active = True
@@ -6412,392 +6264,298 @@ class DeepSeekChatAsync:
                 self.messages = []
             self.logger.info("对话状态已重置")
         
-        # 使用循环处理工具调用，避免递归
-        current_input = input_text
-        max_iterations = 10
-        iteration = 0
+        # 【关键修改】在添加用户消息之前进行压缩检查（输出信息到命令行）
+        should_compress, reason = self.compressor.should_compress(self.messages)
+        if should_compress:
+            self.logger.debug(f"压缩检查触发: {reason}")
+            
+            original_count = len(self.messages)
+            original_tokens = self.compressor.estimate_tokens(self.messages)
+            
+            print(f"\n📦 {i18n.get('conversation_compress')}...")
+            print(f"   触发原因: {reason}")
+            
+            # 压缩对话（会保护最近的消息）
+            self.messages = self.compressor.compress_conversation(self.messages)
+            
+            compressed_count = len(self.messages)
+            compressed_tokens = self.compressor.estimate_tokens(self.messages)
+            
+            # 压缩信息已经在 compress_conversation 中输出，这里不需要重复
+            # 但可以保留详细日志
+            self.logger.debug(i18n.get('conversation_compressed', original_count, compressed_count))
+            self.logger.debug(f"Token数: {original_tokens} -> {compressed_tokens}")
         
-        while iteration < max_iterations:
-            iteration += 1
-            
-            # 每次循环都检查取消状态
-            if self.is_session_cancelled() or self._cancel_requested:
-                self.logger.debug(f"迭代 {iteration} 时检测到取消")
-                if output_callback:
-                    await output_callback("line", "\n\n⛔ 用户已终止对话\n")
-                return None
-            
-            # 对话压缩检查
-            if iteration == 1:
-                should_compress, reason = self.compressor.should_compress(self.messages)
-                if should_compress:
-                    self.logger.debug(f"压缩检查触发: {reason}")
-                    loop = asyncio.get_running_loop()
-                    self.messages = await loop.run_in_executor(
-                        None, 
-                        self.compressor.compress_conversation, 
-                        self.messages
-                    )
-            
-            self.stats["api_calls"] += 1
-            
-            # 构建提示词
-            if iteration == 1:
-                pre_prompt = """【系统指令】
-    在回答用户问题之前，请务必先执行以下步骤：
-    1. 使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆
-    2. 如果搜索结果中有相关信息，请在回答中适当引用
+        self.stats["api_calls"] += 1
+        
+        # 前置提示词：告诉AI先搜索记忆
+        pre_prompt = """【系统指令】
+            在回答用户问题之前，请务必先执行以下步骤：
+            1. 使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆
+            2. 如果搜索结果中有相关信息，请在回答中适当引用
+            3. 这能帮助你保持对话的连贯性，避免重复询问同样的问题
 
-    现在请处理用户的输入："""
-                enhanced_input = pre_prompt + "\n\n" + current_input
-            else:
-                enhanced_input = current_input
+            【重要】
+            - 每次回答前都必须执行记忆搜索
+            - 如果记忆库中没有相关信息，正常回答即可
+            - 对话结束时，必须使用 `save_memory_and_end_conversation` 工具保存本次对话的重要信息并更新智能体状态
+            - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
+            - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
+            - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
+
+            现在请处理用户的输入："""
+
+        # 后置提示词：提醒AI在结束时保存记忆和状态
+        post_prompt = """
+
+            【注意】
+            当本次对话的话题讨论完成时，请使用 `save_memory_and_end_conversation` 工具结束对话并保存重要信息到记忆库，同时更新你的状态到 100_STATUS.md。
+
+            【自我认知更新】
+            在对话过程中，如果你发现：
+            - 自己的角色定位需要调整
+            - 性格特点需要改变
+            - 能力边界需要重新定义
+            - 行为准则需要优化
+            请使用 `update_soul` 工具更新 99_SOUL.md 文件，这有助于你更好地理解自己并为用户提供更精准的服务。"""
+
+        # 拼接后的用户输入
+        enhanced_input = pre_prompt + "\n\n" + input_text + post_prompt
+
+        self._add_message("user", enhanced_input)
+        
+        if self.history_manager:
+            self.history_manager.add_message("user", enhanced_input, "用户")
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # 如果找到相关记忆，可以添加到上下文中
+        enhanced_messages = []
+        
+        # 添加所有系统消息
+        for msg in self.messages:
+            if msg["role"] == "system":
+                enhanced_messages.append(msg)
+        
+        # 添加非系统消息
+        for msg in self.messages:
+            if msg["role"] != "system":
+                enhanced_messages.append(msg)
+        
+        payload = {
+            "model": constants.DEEPSEEK_MODEL,
+            "messages": enhanced_messages,
+            "temperature": constants.DEFAULT_TEMPERATURE,
+            "max_tokens": constants.DEFAULT_MAX_TOKENS,
+            "stream": True  # 始终启用流式
+        }
+        
+        tools = self.tool_registry.get_tools_schemas()
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        
+        current_time = datetime.now().strftime("%H:%M:%S")
+        if output_callback:
+            output_callback("line", f"\n{i18n.get('thinking', current_time)}\n")
+            output_callback("line", i18n.get('assistant_prefix'))
+        
+        full_response = ""
+        tool_calls_buffer = []
+        current_tool_calls = {}
+        
+        # 添加缓冲区来累积字符，避免每个字符都发送
+        chunk_buffer = ""
+        last_send_time = time.time()
+        MIN_CHUNK_SIZE = 5  # 最小发送大小
+        MAX_CHUNK_DELAY = 0.1  # 最大延迟（秒）
+        
+        try:
+            response = requests.post(
+                constants.DEEPSEEK_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=constants.DEFAULT_TIMEOUT,
+                stream=True
+            )
             
-            self._add_message("user", enhanced_input)
+            if response.status_code != 200:
+                error_msg = f"\n错误状态码: {response.status_code}\n错误响应: {response.text}"
+                if output_callback:
+                    output_callback("error", error_msg)
+                response.raise_for_status()
             
-            if self.history_manager:
-                self.history_manager.add_message("user", enhanced_input, "用户")
-            
-            # 准备请求
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            # 构建消息列表
-            enhanced_messages = []
-            for msg in self.messages:
-                if msg["role"] == "system":
-                    enhanced_messages.append(msg)
-            
-            for msg in self.messages:
-                if msg["role"] != "system":
-                    enhanced_messages.append(msg)
-            
-            payload = {
-                "model": constants.DEEPSEEK_MODEL,
-                "messages": enhanced_messages,
-                "temperature": constants.DEFAULT_TEMPERATURE,
-                "max_tokens": constants.DEFAULT_MAX_TOKENS,
-                "stream": True
-            }
-            
-            tools = self.tool_registry.get_tools_schemas()
-            if tools:
-                payload["tools"] = tools
-                payload["tool_choice"] = "auto"
-            
-            # 发送开始思考的提示
-            if iteration == 1 and output_callback:
-                current_time = datetime.now().strftime("%H:%M:%S")
-                await output_callback("line", f"\n{i18n.get('thinking', current_time)}\n")
-                await output_callback("line", i18n.get('assistant_prefix'))
-            
-            full_response = ""
-            current_tool_calls = {}
-            chunk_buffer = ""
-            last_send_time = time.time()
-            MIN_CHUNK_SIZE = 5
-            MAX_CHUNK_DELAY = 0.1
-            
-            # 创建 ClientSession
-            timeout = aiohttp.ClientTimeout(total=120, connect=10)
-            self._current_session = aiohttp.ClientSession(timeout=timeout)
-            
-            try:
-                # 发送请求前检查
-                if self.is_session_cancelled() or self._cancel_requested:
-                    if output_callback:
-                        await output_callback("line", "\n\n⛔ 用户已终止对话\n")
-                    return None
-                
-                # 发送请求
-                self._current_response = await self._current_session.post(
-                    constants.DEEPSEEK_API_URL,
-                    headers=headers,
-                    json=payload
-                )
-                
-                # 响应后立即检查
-                if self.is_session_cancelled() or self._cancel_requested:
-                    if output_callback:
-                        await output_callback("line", "\n\n⛔ 用户已终止对话\n")
-                    return None
-                
-                # 检查响应状态
-                if self._current_response.status != 200:
-                    error_text = await self._current_response.text()
-                    error_msg = f"\n错误状态码: {self._current_response.status}\n错误响应: {error_text}"
-                    if output_callback:
-                        await output_callback("error", error_msg)
-                    return error_msg
-                
-                # ========== 改进的流式读取：使用数据队列和独立读取任务 ==========
-                data_queue = asyncio.Queue()
-                read_task = None
-                
-                async def read_stream():
-                    """独立的数据读取任务"""
-                    try:
-                        content = self._current_response.content
-                        async for chunk in content.iter_any():
-                            # 每次读取前检查取消状态
-                            if self.is_session_cancelled() or self._cancel_requested:
-                                break
-                            
-                            if chunk:
-                                await data_queue.put(chunk)
-                        
-                        # 读取完成，发送结束标记
-                        await data_queue.put(None)
-                        
-                    except asyncio.CancelledError:
-                        self.logger.debug("读取任务被取消")
-                        await data_queue.put(None)
-                    except Exception as e:
-                        self.logger.error(f"读取流数据错误: {e}")
-                        await data_queue.put(None)
-                
-                # 启动读取任务
-                read_task = asyncio.create_task(read_stream())
-                
-                try:
-                    while True:
-                        # 检查取消状态 - 优先处理
-                        if self.is_session_cancelled() or self._cancel_requested:
-                            self.logger.debug("检测到取消信号，中断处理")
+            # 处理流式响应 - 实时调用回调
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith('data: '):
+                        data = line[6:]  # 去掉 'data: ' 前缀
+                        if data == '[DONE]':
+                            # 发送缓冲区中剩余的内容
                             if chunk_buffer and output_callback:
-                                await output_callback("chunk", chunk_buffer)
+                                output_callback("chunk", chunk_buffer)
+                                chunk_buffer = ""
                             if output_callback:
-                                await output_callback("line", "\n\n⛔ 用户已终止对话\n")
-                            
-                            # 取消读取任务
-                            if read_task and not read_task.done():
-                                read_task.cancel()
-                                try:
-                                    await asyncio.wait_for(read_task, timeout=0.5)
-                                except (asyncio.CancelledError, asyncio.TimeoutError):
-                                    pass
-                            
-                            return None
-                        
-                        # 从队列获取数据，使用短超时以便频繁检查取消状态
-                        try:
-                            chunk_data = await asyncio.wait_for(data_queue.get(), timeout=0.05)
-                        except asyncio.TimeoutError:
-                            # 超时继续循环，检查取消状态
-                            continue
-                        
-                        # None 表示读取完成
-                        if chunk_data is None:
+                                output_callback("line", "\n")
                             break
                         
-                        # 解码并处理数据
                         try:
-                            chunk_str = chunk_data.decode('utf-8')
-                            line_buffer = ""
-                            line_buffer += chunk_str
+                            chunk = json.loads(data)
+                            choices = chunk.get('choices', [])
+                            if not choices:
+                                continue
                             
-                            while '\n' in line_buffer:
-                                line, line_buffer = line_buffer.split('\n', 1)
-                                line = line.strip()
+                            delta = choices[0].get('delta', {})
+                            
+                            # 处理内容 - 批量发送以提高效率
+                            if 'content' in delta and delta['content']:
+                                content = delta['content']
+                                chunk_buffer += content
+                                full_response += content
                                 
-                                if not line:
-                                    continue
-                                
-                                if line.startswith('data: '):
-                                    data = line[6:]
-                                    if data == '[DONE]':
-                                        break
+                                # 判断是否需要发送缓冲区
+                                current_time = time.time()
+                                if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
+                                    current_time - last_send_time >= MAX_CHUNK_DELAY):
+                                    if output_callback:
+                                        output_callback("chunk", chunk_buffer)
+                                    chunk_buffer = ""
+                                    last_send_time = current_time
+                            
+                            # 处理工具调用
+                            if 'tool_calls' in delta:
+                                tool_calls = delta['tool_calls']
+                                for tc in tool_calls:
+                                    index = tc.get('index', 0)
                                     
-                                    try:
-                                        chunk_json = json.loads(data)
-                                        
-                                        choices = chunk_json.get('choices', [])
-                                        if not choices:
-                                            continue
-                                        
-                                        delta = choices[0].get('delta', {})
-                                        
-                                        # 处理文本内容
-                                        if 'content' in delta and delta['content']:
-                                            content_piece = delta['content']
-                                            chunk_buffer += content_piece
-                                            full_response += content_piece
-                                            
-                                            current_time_val = time.time()
-                                            if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
-                                                current_time_val - last_send_time >= MAX_CHUNK_DELAY):
-                                                if output_callback:
-                                                    await output_callback("chunk", chunk_buffer)
-                                                chunk_buffer = ""
-                                                last_send_time = current_time_val
-                                        
-                                        # 处理工具调用
-                                        if 'tool_calls' in delta:
-                                            tool_calls = delta['tool_calls']
-                                            for tc in tool_calls:
-                                                index = tc.get('index', 0)
-                                                
-                                                if index not in current_tool_calls:
-                                                    current_tool_calls[index] = {
-                                                        'id': tc.get('id', ''),
-                                                        'type': 'function',
-                                                        'function': {
-                                                            'name': '',
-                                                            'arguments': ''
-                                                        }
-                                                    }
-                                                
-                                                if 'function' in tc:
-                                                    if 'name' in tc['function']:
-                                                        current_tool_calls[index]['function']['name'] = tc['function']['name']
-                                                    if 'arguments' in tc['function']:
-                                                        current_tool_calls[index]['function']['arguments'] += tc['function']['arguments']
-                                                                    
-                                    except json.JSONDecodeError:
-                                        continue
-                                        
-                        except UnicodeDecodeError:
-                            continue
+                                    if index not in current_tool_calls:
+                                        current_tool_calls[index] = {
+                                            'id': tc.get('id', ''),
+                                            'type': 'function',
+                                            'function': {
+                                                'name': '',
+                                                'arguments': ''
+                                            }
+                                        }
+                                    
+                                    if 'function' in tc:
+                                        if 'name' in tc['function']:
+                                            current_tool_calls[index]['function']['name'] = tc['function']['name']
+                                        if 'arguments' in tc['function']:
+                                            current_tool_calls[index]['function']['arguments'] += tc['function']['arguments']
                             
-                finally:
-                    # 确保读取任务被清理
-                    if read_task and not read_task.done():
-                        read_task.cancel()
-                        try:
-                            await asyncio.wait_for(read_task, timeout=0.5)
-                        except (asyncio.CancelledError, asyncio.TimeoutError):
-                            pass
+                        except json.JSONDecodeError as e:
+                            self.logger.error(f"JSON解析错误: {e}, 数据: {data}")
+                            continue
+            
+            # 处理收集到的工具调用
+            if current_tool_calls:
+                tool_calls_buffer = list(current_tool_calls.values())
+                if output_callback:
+                    output_callback("line", i18n.get('calling_tools') + "\n")
                 
-                # 发送剩余的chunk
-                if chunk_buffer and output_callback:
-                    await output_callback("chunk", chunk_buffer)
-                if output_callback and full_response:
-                    await output_callback("line", "\n")
-                
-                # 处理工具调用
-                if current_tool_calls:
-                    if output_callback:
-                        await output_callback("line", i18n.get('calling_tools') + "\n")
-                    
-                    # 保存助手消息
-                    assistant_msg_content = full_response if full_response else None
-                    if assistant_msg_content:
-                        self._add_message("assistant", assistant_msg_content)
-                        if self.history_manager:
-                            self.history_manager.add_message("assistant", assistant_msg_content, self.name)
-                    else:
-                        self._add_message("assistant", "")
-                        if self.history_manager:
-                            self.history_manager.add_message("assistant", "", self.name)
-                    
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": list(current_tool_calls.values())
-                    }
-                    self.messages.append(assistant_msg)
-                    
-                    # 处理工具调用（检查取消）
-                    if self.is_session_cancelled() or self._cancel_requested:
-                        if output_callback:
-                            await output_callback("line", "\n\n⛔ 用户已终止操作\n")
-                        return None
-                    
-                    tool_responses = await self._handle_tool_calls_async(
-                        list(current_tool_calls.values()), 
-                        output_callback
-                    )
-                    
-                    # 检查对话是否结束
-                    if not self.conversation_active or self.is_session_cancelled():
-                        self.logger.info("对话已结束，停止响应")
-                        if output_callback:
-                            await output_callback("dialogue_ended", i18n.get('dialogue_ended'))
-                        return None
-                    
-                    # 添加工具响应
-                    if tool_responses:
-                        self.messages.extend(tool_responses)
-                    
-                    # 准备下一轮迭代的输入
-                    if output_callback:
-                        await output_callback("line", i18n.get('analyzing_tool_results') + "\n")
-                    
-                    current_input = "请基于以上工具结果继续回答用户的问题。"
-                    continue  # 继续循环，处理工具结果
-                    
-                elif full_response:
-                    # 保存助手响应
-                    self._add_message("assistant", full_response)
+                # 添加助手消息
+                assistant_msg_content = full_response if full_response else None
+                if assistant_msg_content:
+                    self._add_message("assistant", assistant_msg_content)
                     if self.history_manager:
-                        self.history_manager.add_message("assistant", full_response, self.name)
-                    
-                    if output_callback:
-                        await output_callback("complete", full_response)
-                    
-                    return full_response
-                
+                        self.history_manager.add_message("assistant", assistant_msg_content, self.name)
                 else:
-                    return ""
-                    
-            except asyncio.CancelledError:
-                self.logger.debug("异步任务被取消")
-                if output_callback:
-                    await output_callback("line", "\n\n⛔ 用户已终止对话\n")
-                return None
+                    # 如果没有内容，也需要记录空消息
+                    self._add_message("assistant", "")
+                    if self.history_manager:
+                        self.history_manager.add_message("assistant", "", self.name)
                 
-            except aiohttp.ClientError as e:
-                if self.is_session_cancelled() or self._cancel_requested:
+                # 添加工具调用消息
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls_buffer
+                }
+                self.messages.append(assistant_msg)
+                
+                tool_responses = self._handle_tool_calls(tool_calls_buffer, output_callback)
+                
+                if not self.conversation_active:
+                    self.logger.info("对话已结束，停止响应")
+                    # 【修复】发送对话结束信号
+                    if output_callback:
+                        output_callback("dialogue_ended", i18n.get('dialogue_ended'))
                     return None
-                error_msg = f"\n❌ 网络错误: {str(e)}"
+                
+                if tool_responses:
+                    self.messages.extend(tool_responses)
+                
                 if output_callback:
-                    await output_callback("error", error_msg)
-                self.stats["errors"].append(str(e))
-                return error_msg
+                    output_callback("line", i18n.get('analyzing_tool_results') + "\n")
+                return self.think_and_respond("（请基于工具结果继续回答）", output_callback)
+            
+            elif full_response:
+                self._add_message("assistant", full_response)
+                if self.history_manager:
+                    self.history_manager.add_message("assistant", full_response, self.name)
                 
-            except Exception as e:
-                if self.is_session_cancelled() or self._cancel_requested:
-                    return None
-                error_msg = f"\n❌ 错误: {str(e)}"
+                # 发送完成消息
                 if output_callback:
-                    await output_callback("error", error_msg)
-                self.stats["errors"].append(str(e))
-                return error_msg
+                    output_callback("complete", full_response)
+            
+            return full_response if full_response else ""
                 
-            finally:
-                # 清理资源
-                if self._current_response:
-                    try:
-                        self._current_response.close()
-                    except:
-                        pass
-                    self._current_response = None
-                
-                if self._current_session and not self._current_session.closed:
-                    try:
-                        await self._current_session.close()
-                    except:
-                        pass
-                    self._current_session = None
+        except requests.exceptions.RequestException as e:
+            error_msg = f"\n{i18n.get('error_prefix')}API请求失败: {str(e)}"
+            if output_callback:
+                output_callback("error", error_msg)
+            self.stats["errors"].append(str(e))
+            return error_msg
+        except json.JSONDecodeError as e:
+            error_msg = f"\n{i18n.get('error_prefix')}API响应解析失败: {str(e)}"
+            if output_callback:
+                output_callback("error", error_msg)
+            self.stats["errors"].append(str(e))
+            return error_msg
+        except Exception as e:
+            error_msg = f"\n{i18n.get('error_prefix')}{str(e)}"
+            if output_callback:
+                output_callback("error", error_msg)
+            self.stats["errors"].append(str(e))
+            return error_msg
+
+    def reset_conversation(self, reload_prompts: bool = True):
+        """
+        重置对话状态 - 清除所有对话记忆，可选择是否重新加载系统提示词
         
-        # 超过最大迭代次数
-        self.logger.warning(f"达到最大迭代次数 {max_iterations}")
-        return "达到最大处理次数，对话已结束"
-
-
-    async def _set_cancel_future(self, future: asyncio.Future):
-        """设置取消 Future"""
-        if not future.done():
-            future.set_result(True)
-
-    def reload_prompts(self) -> int:
+        Args:
+            reload_prompts: 是否重新加载系统提示词，默认为 True
+        """
+        self.conversation_active = True
+        self.history_loaded = False  # 重置历史加载标记
+        
+        if reload_prompts:
+            # 完全重置：清除所有消息，重新加载系统提示词
+            self.messages = []
+            self._init_system_prompts()
+            self.logger.info("对话已完全重置，系统提示词已重新加载")
+        else:
+            # 只清除非系统消息，保留系统提示词
+            if self.preserve_system:
+                system_messages = [msg for msg in self.messages if msg["role"] == "system"]
+                self.messages = system_messages
+            else:
+                self.messages = []
+            self.logger.info("对话已重置（仅清除对话历史）")
+    
+    def reload_prompts(self):
         """重新加载提示词"""
         old_system_count = len([msg for msg in self.messages if msg["role"] == "system"])
         
+        # 移除所有旧的系统消息
         self.messages = [msg for msg in self.messages if msg["role"] != "system"]
         
+        # 重新加载提示词
         self.prompt_manager.reload()
         self._init_system_prompts()
         
@@ -6806,108 +6564,19 @@ class DeepSeekChatAsync:
         return new_system_count
 
 
-# ==================== 异步包装器（用于在同步环境中调用） ====================
-
-class DeepSeekChatSyncWrapper:
-    """
-    同步包装器 - 用于在同步代码中调用异步 DeepSeekChatAsync
-    提供与原始 DeepSeekChat 相同的接口
-    """
-    
-    def __init__(self, *args, **kwargs):
-        self._async_chat = DeepSeekChatAsync(*args, **kwargs)
-        self._loop = None
-        self._current_task = None
-    
-    def _get_loop(self):
-        """获取或创建事件循环"""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop
-    
-    def cancel_current_response(self) -> bool:
-        """取消当前响应"""
-        return self._async_chat.cancel_current_response()
-    
-    def is_cancelled(self) -> bool:
-        """检查是否被取消"""
-        return self._async_chat.is_cancelled()
-    
-    def reset_cancel_state(self):
-        """重置取消状态"""
-        self._async_chat.reset_cancel_state()
-    
-    def reset_conversation(self, reload_prompts: bool = True):
-        """重置对话"""
-        self._async_chat.reset_conversation(reload_prompts)
-    
-    def reload_prompts(self) -> int:
-        """重新加载提示词"""
-        return self._async_chat.reload_prompts()
-    
-    def think_and_respond(self, input_text: str, output_callback: Callable = None) -> Optional[str]:
-        """
-        同步版本的 think_and_respond
-        
-        如果 output_callback 是同步函数，会自动包装为异步
-        """
-        loop = self._get_loop()
-        
-        # 包装回调函数
-        async def async_callback(msg_type, content):
-            if output_callback:
-                # 如果回调是同步函数，在线程池中执行
-                if asyncio.iscoroutinefunction(output_callback):
-                    await output_callback(msg_type, content)
-                else:
-                    # 同步回调，在线程池中执行以避免阻塞
-                    await loop.run_in_executor(None, output_callback, msg_type, content)
-        
-        # 运行异步方法
-        self._current_task = asyncio.ensure_future(
-            self._async_chat.think_and_respond(input_text, async_callback),
-            loop=loop
-        )
-        
-        try:
-            # 等待完成，直到被取消
-            result = loop.run_until_complete(self._current_task)
-            return result
-        except asyncio.CancelledError:
-            return None
-        finally:
-            self._current_task = None
-    
-    @property
-    def conversation_active(self):
-        return self._async_chat.conversation_active
-    
-    @conversation_active.setter
-    def conversation_active(self, value):
-        self._async_chat.conversation_active = value
-    
-    @property
-    def messages(self):
-        return self._async_chat.messages
-    
-# ==================== WebSocket处理器（支持取消操作） ====================
+# ==================== WebSocket处理器（修改版：添加重置对话功能） ====================
 
 class WebSocketHandler:
-    """WebSocket处理器 - 支持在AI响应时接收终止命令"""
+    """WebSocket处理器 - 处理WebSocket连接和消息"""
     
     def __init__(self, ai_manager):
         self.ai_manager = ai_manager
         self.logger = Logger("WebSocket")
         self.connected_clients = set()
         self.client_sessions = {}
-        self._current_tasks = {}  # 当前正在执行的任务 {websocket: asyncio.Task}
-        self._receive_tasks = {}  # 接收消息的任务 {websocket: asyncio.Task}
         
     async def register(self, websocket):
-        """注册新客户端 - 不再启动接收循环，由调用方处理"""
+        """注册新客户端"""
         self.connected_clients.add(websocket)
         self.client_sessions[websocket] = {
             "connected_at": datetime.now(),
@@ -6925,29 +6594,12 @@ class WebSocketHandler:
         
         # 发送欢迎信息和初始状态
         await self.send_welcome_info(websocket)
-        
-        # 注意：不再在这里启动接收循环，避免冲突
     
     async def unregister(self, websocket):
         """注销客户端"""
-        self.connected_clients.discard(websocket)
+        self.connected_clients.remove(websocket)
         if websocket in self.client_sessions:
             del self.client_sessions[websocket]
-        
-        # 清理当前任务
-        if websocket in self._current_tasks:
-            task = self._current_tasks[websocket]
-            if not task.done():
-                task.cancel()
-            del self._current_tasks[websocket]
-        
-        # 清理接收任务
-        if websocket in self._receive_tasks:
-            receive_task = self._receive_tasks[websocket]
-            if not receive_task.done():
-                receive_task.cancel()
-            del self._receive_tasks[websocket]
-        
         self.logger.info(i18n.get('client_disconnected', websocket.remote_address))
     
     async def send_welcome_info(self, websocket):
@@ -7028,48 +6680,18 @@ class WebSocketHandler:
                 })
 
     async def send_message(self, websocket, message):
-        """发送消息到客户端 - 使用短超时，避免阻塞"""
+        """发送消息到客户端 - 确保完整发送不被截断"""
         try:
             # 将消息转换为JSON字符串
             json_str = json.dumps(message, ensure_ascii=False)
             
-            # 使用短超时发送，避免长时间阻塞
-            await asyncio.wait_for(websocket.send(json_str), timeout=1.0)
+            # 直接发送整个字符串，WebSocket协议会自动处理分片
+            await websocket.send(json_str)
             
-        except asyncio.TimeoutError:
-            self.logger.warning("发送消息超时")
         except websockets.exceptions.ConnectionClosed:
             self.logger.warning("连接已关闭，无法发送消息")
         except Exception as e:
             self.logger.error(f"发送消息失败: {e}")
-    
-    async def send_streaming_message(self, websocket, msg_type, content):
-        """发送流式消息 - 带取消检查，快速发送"""
-        try:
-            # 检查连接是否还在
-            if websocket not in self.connected_clients:
-                return
-            
-            # 检查是否被取消
-            if self.ai_manager and self.ai_manager.ai:
-                if self.ai_manager.ai.is_session_cancelled() or self.ai_manager.ai._cancel_requested:
-                    return
-            
-            json_str = json.dumps({
-                "type": msg_type,
-                "content": content
-            }, ensure_ascii=False)
-            
-            # 使用短超时发送流式消息
-            await asyncio.wait_for(websocket.send(json_str), timeout=0.3)
-            
-        except asyncio.TimeoutError:
-            # 超时忽略，继续
-            pass
-        except websockets.exceptions.ConnectionClosed:
-            pass
-        except Exception as e:
-            self.logger.debug(f"发送流式消息失败: {e}")
     
     async def broadcast(self, message):
         """广播消息到所有客户端"""
@@ -7077,7 +6699,7 @@ class WebSocketHandler:
             try:
                 await self.send_message(websocket, message)
             except:
-                pass
+                await self.unregister(websocket)
     
     async def broadcast_task_status(self, task: Dict, status: str, message: str = None):
         """广播任务状态"""
@@ -7091,7 +6713,7 @@ class WebSocketHandler:
         })
     
     async def handle_message(self, websocket, message):
-        """处理接收到的消息 - 优先处理终止信号"""
+        """处理接收到的消息"""
         try:
             data = json.loads(message)
             msg_type = data.get("type", "unknown")
@@ -7100,16 +6722,6 @@ class WebSocketHandler:
             if websocket in self.client_sessions:
                 self.client_sessions[websocket]["message_count"] += 1
             
-            # 【关键】优先处理终止信号，即使有其他任务在运行
-            if msg_type == "stop_conversation":
-                await self.handle_stop_conversation(websocket)
-                return
-            
-            if msg_type == "command" and data.get("command") == "/stop":
-                await self.handle_stop_conversation(websocket)
-                return
-            
-            # 其他消息正常处理
             if msg_type == "command":
                 await self.handle_command(websocket, data)
             elif msg_type == "message":
@@ -7138,125 +6750,7 @@ class WebSocketHandler:
                 "type": "error",
                 "content": f"处理失败: {str(e)}"
             })
-
-    async def handle_stop_conversation(self, websocket):
-        """处理终止对话请求 - 增强版，立即生效，包含详细调试信息"""
-        self.logger.info(f"[STOP] 收到终止对话请求，客户端: {websocket.remote_address}")
-        
-        # 记录当前状态
-        if self.ai_manager and self.ai_manager.ai:
-            self.logger.info(f"[STOP] 当前AI状态 - conversation_active={self.ai_manager.ai.conversation_active}, "
-                            f"_cancel_requested={self.ai_manager.ai._cancel_requested}, "
-                            f"_session_cancelled={self.ai_manager.ai._session_cancelled}")
-            self.logger.info(f"[STOP] 当前响应对象: _current_response={self.ai_manager.ai._current_response is not None}, "
-                            f"_current_session={self.ai_manager.ai._current_session is not None}")
-        
-        # 记录当前任务状态
-        if websocket in self._current_tasks:
-            task = self._current_tasks[websocket]
-            self.logger.info(f"[STOP] 当前任务状态 - done={task.done()}, cancelled={task.cancelled()}")
-        else:
-            self.logger.info(f"[STOP] 没有找到当前任务")
-        
-        # 1. 立即发送确认
-        await self.send_message(websocket, {
-            "type": "stop_ack",
-            "content": "⛔ 正在终止对话...",
-            "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
-        })
-        self.logger.info(f"[STOP] 已发送终止确认消息")
-        
-        # 2. 强制终止AI响应
-        if self.ai_manager and self.ai_manager.ai:
-            self.logger.info(f"[STOP] 开始强制终止AI响应")
-            
-            # 设置所有取消标志
-            self.ai_manager.ai._cancel_requested = True
-            self.ai_manager.ai.conversation_active = False
-            self.ai_manager.ai._session_cancelled = True
-            self.logger.info(f"[STOP] 已设置取消标志: _cancel_requested=True, conversation_active=False, _session_cancelled=True")
-            
-            # 强制中断 HTTP 连接
-            if hasattr(self.ai_manager.ai, '_current_response') and self.ai_manager.ai._current_response:
-                try:
-                    self.ai_manager.ai._current_response.close()
-                    self.logger.info(f"[STOP] 已强制关闭 HTTP 响应")
-                except Exception as e:
-                    self.logger.debug(f"[STOP] 关闭响应失败: {e}")
-                self.ai_manager.ai._current_response = None
-            else:
-                self.logger.info(f"[STOP] 没有活动的 HTTP 响应")
-            
-            # 关闭 HTTP 会话
-            if hasattr(self.ai_manager.ai, '_current_session') and self.ai_manager.ai._current_session:
-                try:
-                    asyncio.create_task(self._close_session_safely(self.ai_manager.ai._current_session))
-                    self.logger.info(f"[STOP] 已创建关闭会话的任务")
-                except Exception as e:
-                    self.logger.debug(f"[STOP] 关闭会话失败: {e}")
-                self.ai_manager.ai._current_session = None
-            else:
-                self.logger.info(f"[STOP] 没有活动的 HTTP 会话")
-            
-            # 生成新的请求 ID
-            old_id = self.ai_manager.ai._current_request_id
-            self.ai_manager.ai._current_request_id = str(uuid.uuid4())
-            self.logger.info(f"[STOP] 已生成新的请求ID: {old_id} -> {self.ai_manager.ai._current_request_id}")
-        
-        # 3. 取消当前任务
-        if websocket in self._current_tasks:
-            task = self._current_tasks[websocket]
-            if not task.done():
-                self.logger.info(f"[STOP] 正在取消任务...")
-                task.cancel()
-                self.logger.info(f"[STOP] 任务已取消")
-                
-                try:
-                    await asyncio.wait_for(task, timeout=0.5)
-                    self.logger.info(f"[STOP] 任务已成功等待完成")
-                except asyncio.CancelledError:
-                    self.logger.info(f"[STOP] 任务被取消（预期行为）")
-                except asyncio.TimeoutError:
-                    self.logger.warning(f"[STOP] 等待任务取消超时")
-            else:
-                self.logger.info(f"[STOP] 任务已完成，无需取消")
-        else:
-            self.logger.info(f"[STOP] 没有找到当前任务")
-        
-        # 4. 重置对话状态
-        if self.ai_manager:
-            old_state = self.ai_manager.dialogue_in_progress
-            self.ai_manager.dialogue_in_progress = False
-            self.logger.info(f"[STOP] 对话状态已重置: {old_state} -> False")
-        
-        # 5. 发送完成通知
-        await self.send_message(websocket, {
-            "type": "stop_complete",
-            "content": "✅ 对话已终止",
-            "timestamp": datetime.now().strftime(constants.DATETIME_FORMAT)
-        })
-        
-        await self.send_message(websocket, {
-            "type": "dialogue_ended",
-            "content": "⛔ 对话已被终止，请使用 /new 开始新对话"
-        })
-        
-        # 最终状态报告
-        self.logger.info(f"[STOP] 终止对话处理完成")
-        if self.ai_manager and self.ai_manager.ai:
-            self.logger.info(f"[STOP] 最终状态 - conversation_active={self.ai_manager.ai.conversation_active}, "
-                            f"_cancel_requested={self.ai_manager.ai._cancel_requested}, "
-                            f"_session_cancelled={self.ai_manager.ai._session_cancelled}")
-
-
-    async def _close_session_safely(self, session):
-        """安全关闭会话"""
-        try:
-            if session and not session.closed:
-                await session.close()
-        except Exception:
-            pass
-
+    
     async def handle_task_message(self, websocket, data):
         """处理任务相关消息 - 简化版，所有任务都是对话任务"""
         action = data.get("action", "").strip()
@@ -7345,193 +6839,7 @@ class WebSocketHandler:
                         "type": "error",
                         "content": i18n.get('memo_complete_failed', memo_id)
                     })
-
-    async def handle_user_message(self, websocket, data):
-        """处理用户消息 - 改进任务管理，增加调试信息"""
-        content = data.get("content", "").strip()
-        
-        if not content:
-            return
-        
-        self.logger.info(f"[USER] 收到用户消息: {content[:50]}...")
-        
-        # 检查是否有正在进行的对话
-        if websocket in self._current_tasks:
-            old_task = self._current_tasks[websocket]
-            if not old_task.done():
-                self.logger.info(f"[USER] 发现正在进行的任务，准备取消: {websocket.remote_address}")
-                
-                # 发送通知
-                await self.send_message(websocket, {
-                    "type": "info",
-                    "content": "⛔ 正在取消之前的对话..."
-                })
-                
-                # 取消旧任务
-                if self.ai_manager and self.ai_manager.ai:
-                    self.logger.info(f"[USER] 设置AI取消标志")
-                    self.ai_manager.ai._cancel_requested = True
-                    self.ai_manager.ai.conversation_active = False
-                    
-                    # 强制关闭连接
-                    if hasattr(self.ai_manager.ai, '_current_response') and self.ai_manager.ai._current_response:
-                        try:
-                            self.ai_manager.ai._current_response.close()
-                            self.logger.info(f"[USER] 已强制关闭 HTTP 响应")
-                        except Exception as e:
-                            self.logger.debug(f"[USER] 关闭响应失败: {e}")
-                        self.ai_manager.ai._current_response = None
-                
-                old_task.cancel()
-                self.logger.info(f"[USER] 任务已取消")
-                
-                # 等待旧任务结束
-                try:
-                    await asyncio.wait_for(old_task, timeout=1.0)
-                    self.logger.info(f"[USER] 旧任务已结束")
-                except asyncio.CancelledError:
-                    self.logger.info(f"[USER] 旧任务被取消（预期行为）")
-                except asyncio.TimeoutError:
-                    self.logger.warning(f"[USER] 等待旧任务结束超时")
-                
-                # 重置AI取消状态（但保持会话取消标志）
-                if self.ai_manager and self.ai_manager.ai:
-                    self.ai_manager.ai._cancel_requested = False
-                    self.logger.info(f"[USER] AI取消标志已重置")
-        
-        # 检查会话是否被取消
-        if self.ai_manager and self.ai_manager.ai and self.ai_manager.ai.is_session_cancelled():
-            self.logger.info(f"[USER] 会话已被取消，拒绝处理新消息")
-            await self.send_message(websocket, {
-                "type": "info",
-                "content": "⛔ 会话已被终止，请使用 /new 开始新对话"
-            })
-            return
-        
-        # 创建新任务并存储
-        self.logger.info(f"[USER] 创建新任务处理消息")
-        task = asyncio.create_task(self._process_user_message(websocket, content))
-        self._current_tasks[websocket] = task
-        
-        try:
-            await task
-            self.logger.info(f"[USER] 任务处理完成")
-        except asyncio.CancelledError:
-            self.logger.info(f"[USER] 用户消息处理被取消: {websocket.remote_address}")
-        except Exception as e:
-            self.logger.error(f"[USER] 处理用户消息异常: {e}")
-        finally:
-            if websocket in self._current_tasks:
-                del self._current_tasks[websocket]
-                self.logger.info(f"[USER] 已清理任务引用")
-
-    async def _process_user_message(self, websocket, content):
-        """实际处理用户消息 - 增强取消检查，增加调试信息"""
-        self.logger.info(f"[PROCESS] 开始处理用户消息: {content[:50]}...")
-        
-        # 在开始处理前立即检查取消状态
-        if self.ai_manager.ai and self.ai_manager.ai.is_session_cancelled():
-            self.logger.info(f"[PROCESS] 会话已被取消，拒绝处理")
-            await self.send_message(websocket, {
-                "type": "info",
-                "content": "⛔ 会话已被终止，请使用 /new 开始新对话"
-            })
-            return
-        
-        if self.ai_manager.ai and self.ai_manager.ai.is_cancelled():
-            self.logger.info(f"[PROCESS] AI处于取消状态，重置取消标志")
-            # 重置取消状态，允许新消息
-            self.ai_manager.ai.reset_cancel_state()
-            self.ai_manager.ai.conversation_active = True
-            self.logger.info(f"[PROCESS] 取消状态已重置")
-        
-        # 初始化AI（如果未初始化）
-        if not self.ai_manager.ai:
-            self.logger.info("[PROCESS] 初始化AI...")
-            self.ai_manager.add_ai()
-        
-        # 检查对话是否活跃，如果不活跃则重置
-        if not self.ai_manager.ai.conversation_active:
-            self.logger.info("[PROCESS] 对话不活跃，重置状态")
-            self.ai_manager.ai.conversation_active = True
-            self.ai_manager.ai._cancel_requested = False
-        
-        if not self.ai_manager.dialogue_in_progress:
-            self.logger.info("[PROCESS] 开始新对话")
-            self.ai_manager.dialogue_in_progress = True
-            self.ai_manager.history_manager.start_new_conversation(content[:50] + "...")
-            
-            await self.send_message(websocket, {
-                "type": "info",
-                "content": i18n.get('conversation_start')
-            })
-        
-        # 定义异步回调函数 - 使用快速发送
-        async def output_callback(msg_type, content_text):
-            """AI输出的异步回调函数"""
-            try:
-                # 检查连接是否还在
-                if websocket not in self.connected_clients:
-                    return
-                
-                # 检查是否已被取消
-                if self.ai_manager.ai and (self.ai_manager.ai.is_session_cancelled() or self.ai_manager.ai._cancel_requested):
-                    self.logger.debug(f"[PROCESS] 输出回调被取消，跳过发送")
-                    return
-                
-                # 使用流式发送方法
-                await self.send_streaming_message(websocket, msg_type, content_text)
-                
-            except Exception as e:
-                self.logger.error(f"[PROCESS] 实时发送消息失败: {e}")
-        
-        try:
-            self.logger.info(f"[PROCESS] 调用AI.think_and_respond")
-            # 创建一个可以取消的任务
-            response_task = asyncio.create_task(
-                self.ai_manager.ai.think_and_respond(content, output_callback)
-            )
-            
-            # 存储当前任务引用
-            self._current_tasks[websocket] = response_task
-            
-            # 等待响应完成
-            response = await response_task
-            self.logger.info(f"[PROCESS] AI响应完成，长度: {len(response) if response else 0}")
-            
-            # 检查对话是否结束
-            if self.ai_manager.ai and not self.ai_manager.ai.conversation_active:
-                self.logger.info("[PROCESS] 对话结束")
-                self.ai_manager.dialogue_in_progress = False
-                self.ai_manager.history_manager.end_current_conversation()
-                await self.send_message(websocket, {
-                    "type": "info",
-                    "content": i18n.get('conversation_ended')
-                })
-                await self.send_message(websocket, {
-                    "type": "dialogue_ended",
-                    "content": i18n.get('dialogue_ended')
-                })
-                
-        except asyncio.CancelledError:
-            self.logger.info("[PROCESS] 用户消息处理被取消")
-            # 确保AI也取消当前响应
-            if self.ai_manager.ai:
-                self.logger.info("[PROCESS] 设置AI取消标志")
-                self.ai_manager.ai._cancel_requested = True
-                self.ai_manager.ai.conversation_active = False
-            await self.send_message(websocket, {
-                "type": "dialogue_ended",
-                "content": "⛔ 对话已被终止"
-            })
-        except Exception as e:
-            self.logger.error(f"[PROCESS] 处理用户消息失败: {e}")
-            await self.send_message(websocket, {
-                "type": "error",
-                "content": f"{i18n.get('error_prefix')}{str(e)}"
-            })
-
-
+    
     async def handle_command(self, websocket, data):
         """处理命令消息"""
         command = data.get("command", "").strip()
@@ -7548,34 +6856,16 @@ class WebSocketHandler:
             })
             await websocket.close()
             
-        elif command == "/shutdown":
-            # 优雅关闭整个服务器进程
-            await self.send_message(websocket, {
-                "type": "command_result",
-                "content": "🛑 服务器即将关闭..."
-            })
-            await self.broadcast({
-                "type": "info",
-                "content": "🛑 服务器正在关闭，所有连接将断开"
-            })
-            self.ai_manager.shutdown_server()
-            
-        elif command == "/stop":
-            await self.handle_stop_conversation(websocket)
-
         elif command == "/new":
-            # 开始新对话，重置会话取消标志
-            if self.ai_manager and self.ai_manager.ai:
-                # 重置会话取消标志
-                self.ai_manager.ai._session_cancelled = False
-                self.ai_manager.ai._cancel_requested = False
-                self.ai_manager.ai.conversation_active = True
-                
-                # 重置对话
+            # 【新增】开始新对话：保存当前对话，重置AI状态，重新加载系统提示词
+            self.ai_manager.history_manager.archive_current_conversation()
+            if self.ai_manager.ai:
+                # 重置对话状态，重新加载系统提示词
                 self.ai_manager.ai.reset_conversation(reload_prompts=True)
+                # 重置对话进行中标记
                 self.ai_manager.dialogue_in_progress = False
+                # 重新初始化提示词管理器（确保最新）
                 self.ai_manager.prompt_manager.reload()
-                
                 self.logger.info(i18n.get('new_conversation_reset'))
                 
                 await self.send_message(websocket, {
@@ -7583,9 +6873,15 @@ class WebSocketHandler:
                     "content": i18n.get('new_conversation_reset')
                 })
                 
+                # 发送重置完成通知
                 await self.send_message(websocket, {
                     "type": "dialogue_reset",
-                    "content": "✅ 会话已重置，可以开始新对话"
+                    "content": i18n.get('dialogue_reset_complete')
+                })
+            else:
+                await self.send_message(websocket, {
+                    "type": "command_result",
+                    "content": i18n.get('new_conversation')
                 })
             
         elif command == "/list":
@@ -7699,7 +6995,6 @@ class WebSocketHandler:
                 result = f"\n{i18n.get('task_stats', 
                                         stats.get('total_executions', 0),
                                         stats.get('total_executions', 0),
-                                        stats.get('total_executions', 0),
                                         stats.get('total_executions', 0))}\n\n"
                 
                 pending = self.ai_manager.memo_db.get_pending_tasks_for_user()
@@ -7724,9 +7019,7 @@ class WebSocketHandler:
             
         elif command == "/help":
             help_text = f"\n可用命令:\n"
-            help_text += "  /exit - 断开当前连接\n"
-            help_text += "  /shutdown - 关闭整个服务器进程\n"
-            help_text += "  /stop - 强制终止当前AI回复\n"
+            help_text += "  /exit - 退出连接\n"
             help_text += "  /new - 开始新对话（保存当前对话，重置AI记忆，重新加载系统提示词）\n"
             help_text += "  /list - 列出所有对话\n"
             help_text += "  /memories - 查看最近的记忆\n"
@@ -7753,17 +7046,108 @@ class WebSocketHandler:
             # 如果不是命令，当作普通消息处理
             await self.handle_user_message(websocket, {"type": "message", "content": command})
 
+    async def handle_user_message(self, websocket, data):
+        """处理用户消息 - 实时流式输出"""
+        content = data.get("content", "").strip()
+        
+        if not content:
+            return
+        
+        self.logger.info(f"收到用户消息: {content[:50]}...")
+        
+        # 确保AI已初始化
+        if not self.ai_manager.ai:
+            self.logger.info("初始化AI...")
+            self.ai_manager.add_ai()
+        
+        # 如果还没有活跃对话，开始新对话
+        if not self.ai_manager.dialogue_in_progress:
+            self.logger.info("开始新对话")
+            self.ai_manager.dialogue_in_progress = True
+            self.ai_manager.history_manager.start_new_conversation(content[:50] + "...")
+            
+            # 发送对话开始消息
+            await self.send_message(websocket, {
+                "type": "info",
+                "content": i18n.get('conversation_start')
+            })
+        
+        # 获取当前事件循环
+        loop = asyncio.get_running_loop()
+        
+        # 定义输出回调函数 - 实时发送
+        def output_callback(msg_type, content):
+            """AI输出的回调函数 - 实时发送每个chunk"""
+            self.logger.info(f"输出回调被调用: {msg_type}, 内容长度: {len(content)}")
+            
+            # 创建发送消息的协程
+            async def send_msg():
+                try:
+                    await websocket.send(json.dumps({
+                        "type": msg_type,
+                        "content": content
+                    }, ensure_ascii=False))
+                    self.logger.info(f"实时消息发送成功: {msg_type}")
+                except Exception as e:
+                    self.logger.error(f"实时发送消息失败: {e}")
+            
+            # 提交到事件循环
+            asyncio.run_coroutine_threadsafe(send_msg(), loop)
+        
+        # 让AI思考并回应 - 不等待完整响应，通过回调实时发送
+        try:
+            self.logger.info("开始AI思考...")
+            
+            # 在线程池中运行AI思考，通过回调实时发送消息
+            response = await loop.run_in_executor(
+                None,
+                self.ai_manager.ai.think_and_respond,
+                content,
+                output_callback  # 传递回调函数，AI会在生成每个chunk时调用
+            )
+            
+            self.logger.info(f"AI思考完成，完整响应长度: {len(response) if response else 0}")
+            
+            # 检查对话是否结束
+            if not self.ai_manager.ai.conversation_active:
+                self.logger.info("对话结束")
+                self.ai_manager.dialogue_in_progress = False
+                self.ai_manager.history_manager.end_current_conversation()
+                await self.send_message(websocket, {
+                    "type": "info",
+                    "content": i18n.get('conversation_ended')
+                })
+                # 【修复】发送明确的对话结束信号
+                await self.send_message(websocket, {
+                    "type": "dialogue_ended",
+                    "content": i18n.get('dialogue_ended')
+                })
+                
+        except Exception as e:
+            self.logger.error(f"AI处理消息失败: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "content": f"{i18n.get('error_prefix')}{str(e)}"
+                }, ensure_ascii=False))
+            except:
+                pass
+
+
 # ==================== 对话管理器（修改版：添加重置对话功能） ====================
+
 class EnhancedAIManager:
     """增强的AI对话管理器 - 集成任务调度器"""
     
     def __init__(self, debug_level: int = None, load_history: bool = None, command_executor: CommandExecutor = None):
-        self.ai: Optional[DeepSeekChatAsync] = None
+        self.ai: Optional[DeepSeekChat] = None
+        self.dialogue_history: List[Dict] = []
         self.config = ConfigManager()
         self.command_executor = command_executor or SubprocessCommandExecutor()
-        self.prompt_manager = PromptManager()
-        self.scheduler: Optional[TaskScheduler] = None
-        self._shutdown_event: Optional[asyncio.Event] = None
+        self.prompt_manager = PromptManager()  # 创建提示词管理器
+        self.scheduler: Optional[TaskScheduler] = None  # 任务调度器
         
         if debug_level is None:
             debug_level = self.config.get("system.debug_level", 1)
@@ -7771,7 +7155,9 @@ class EnhancedAIManager:
         self.logger = Logger("Manager", debug_level)
         self.running = True
         
+        # 确保 ~/.aibox 目录存在
         os.makedirs(constants.SAVE_DIR, exist_ok=True)
+        # 确保 prompts 目录存在（PromptManager 会创建）
         os.makedirs(constants.PROMPTS_DIR, exist_ok=True)
         
         self.memory_db = MemoryDatabase()
@@ -7781,36 +7167,39 @@ class EnhancedAIManager:
         self.dialogue_in_progress = False
         self.ws_handler = None
     
-    def shutdown_server(self):
-        """触发服务器关闭"""
-        if self._shutdown_event:
-            self._shutdown_event.set()
-            self.logger.info("收到关闭信号，服务器即将停止...")
-
     def global_exit_handler(self, reason: str, summary: str):
-        """对话结束处理器 - 同步版本，因为是从异步AI的回调中调用的"""
+        """对话结束处理器"""
         self.logger.info(f"对话结束 - 原因: {reason}")
         
         self.history_manager.end_current_conversation(summary)
         
         if self.ai:
-            # 注意：这里调用同步的 reset_conversation
-            self.ai.reset_conversation(reload_prompts=False)
+            # 智能体主动结束对话后，重置对话状态但不清除系统提示词
+            # 注意：这里只重置对话标记，不清除消息历史
+            self.ai.conversation_active = True
+            # 但为了下次对话不加载旧的历史，我们清除非系统消息
+            if self.ai.preserve_system:
+                system_messages = [msg for msg in self.ai.messages if msg["role"] == "system"]
+                self.ai.messages = system_messages
+            else:
+                self.ai.messages = []
+            self.ai.history_loaded = False  # 重置历史加载标记
         
         self.dialogue_in_progress = False
         self.logger.info("对话状态已重置，可以开始新对话")
-
+    
     def reset_dialogue(self):
-        """重置对话"""
+        """重置对话 - 清除所有对话记忆，重新加载系统提示词"""
         if self.ai:
+            # 完全重置AI状态，重新加载系统提示词
             self.ai.reset_conversation(reload_prompts=True)
         self.dialogue_in_progress = False
         self.history_manager.reset_conversation()
         self.logger.info(i18n.get('dialogue_reset_complete'))
     
-    def add_ai(self) -> DeepSeekChatAsync:  # 修改返回类型
+    def add_ai(self) -> DeepSeekChat:
         """添加AI"""
-        ai = DeepSeekChatAsync(  # 使用同步包装器
+        ai = DeepSeekChat(
             api_key=None,
             max_history=constants.DEFAULT_MAX_HISTORY,
             debug_level=self.logger.level,
@@ -7832,6 +7221,7 @@ class EnhancedAIManager:
         print(i18n.get('welcome_title'))
         print("="*70)
         
+        # 显示存储位置
         print(i18n.get('data_dir', constants.SAVE_DIR))
         print(i18n.get('skills_dir', constants.SKILLS_DIR))
         print(i18n.get('prompts_dir', constants.PROMPTS_DIR))
@@ -7840,6 +7230,7 @@ class EnhancedAIManager:
         if os.path.exists(config_path):
             print(i18n.get('config_file', config_path))
         
+        # 显示提示词数量
         prompt_count = self.prompt_manager.get_prompt_count()
         if prompt_count > 0:
             prompts = self.prompt_manager.get_prompts_list()
@@ -7849,6 +7240,7 @@ class EnhancedAIManager:
             if prompt_count > 5:
                 print(i18n.get('more_skills', prompt_count-5))
         
+        # 显示任务调度器状态
         if constants.SCHEDULER_ENABLED:
             print(i18n.get('scheduler_started'))
         
@@ -7861,6 +7253,7 @@ class EnhancedAIManager:
                 print(i18n.get('overdue_memos', memo_stats['overdue']))
             print(i18n.get('completed_memos', memo_stats['completed']))
         
+        # 显示待执行任务
         pending = self.memo_db.get_pending_tasks_for_user()
         if pending:
             print(f"\n{i18n.get('pending_memos_title')}")
@@ -7878,55 +7271,34 @@ class EnhancedAIManager:
             if len(pending) > 5:
                 print(i18n.get('more_skills', len(pending)-5))
         
-        skills_dir = constants.SKILLS_DIR
-        if os.path.exists(skills_dir):
-            skills = [f for f in os.listdir(skills_dir) 
-                     if os.path.isfile(os.path.join(skills_dir, f)) 
-                     and not f.startswith("_")]
-            if skills:
-                print(i18n.get('loaded_skills', len(skills)))
-                for skill in skills[:5]:
-                    print(i18n.get('skill_item', os.path.splitext(skill)[0]))
-                if len(skills) > 5:
-                    print(i18n.get('more_skills', len(skills)-5))
+        # 显示已加载的技能（含简介）
+        skill_manager = getattr(getattr(self.ai, 'tool_registry', None), 'skill_manager', None)
+        if skill_manager and skill_manager.count() > 0:
+            all_skills = skill_manager.get_all()
+            print(i18n.get('loaded_skills', skill_manager.count()))
+            for s in all_skills[:5]:
+                print(f"  • {s['name']} — {s['summary']}")
+            if skill_manager.count() > 5:
+                print(i18n.get('more_skills', skill_manager.count() - 5))
         
+        # 显示WebSocket服务器信息
         host = constants.WEBSOCKET_HOST
         port = constants.WEBSOCKET_PORT
         print(i18n.get('websocket_started', host, port))
     
     async def handle_connection(self, websocket, path):
-        """处理WebSocket连接 - 修复接收循环冲突"""
+        """处理WebSocket连接"""
         self.logger.info(f"新连接: {websocket.remote_address}, path: {path}")
-        
-        # 注册客户端
         await self.ws_handler.register(websocket)
-        
-        # 创建接收任务
-        receive_task = asyncio.create_task(self._receive_loop(websocket))
-        self.ws_handler._receive_tasks[websocket] = receive_task
-        
-        try:
-            # 等待接收任务完成（连接关闭时退出）
-            await receive_task
-        except asyncio.CancelledError:
-            self.logger.info(f"接收任务被取消: {websocket.remote_address}")
-        except Exception as e:
-            self.logger.error(f"接收循环错误: {e}")
-        finally:
-            await self.ws_handler.unregister(websocket)
-
-
-    
-    async def _receive_loop(self, websocket):
-        """独立的接收循环 - 只在这里调用 recv"""
         try:
             async for message in websocket:
-                # 立即处理消息
                 await self.ws_handler.handle_message(websocket, message)
         except websockets.exceptions.ConnectionClosed as e:
-            self.logger.info(f"连接关闭: {e.code} - {e.reason}")
+            self.logger.info(f"连接关闭: {e}")
         except Exception as e:
-            self.logger.error(f"接收循环错误: {e}")
+            self.logger.error(f"处理错误: {e}")
+        finally:
+            await self.ws_handler.unregister(websocket)
 
     async def websocket_server(self):
         """启动WebSocket服务器并集成任务调度器"""
@@ -7934,15 +7306,14 @@ class EnhancedAIManager:
         port = constants.WEBSOCKET_PORT
         
         self.ws_handler = WebSocketHandler(self)
-        self._shutdown_event = asyncio.Event()
         
+        # 如果启用了任务调度器，创建并启动
         if constants.SCHEDULER_ENABLED:
             self.scheduler = TaskScheduler(asyncio.get_running_loop(), self.logger)
             self.scheduler.set_websocket_handler(self.ws_handler)
-            self.scheduler.set_ai_manager(self)
+            self.scheduler.set_ai_manager(self)  # 设置AI管理器引用
         
         async def handler(websocket):
-            # 直接调用 handle_connection，不再额外调用 recv
             await self.handle_connection(websocket, None)
         
         server = await websockets.serve(handler, host, port)
@@ -7950,24 +7321,24 @@ class EnhancedAIManager:
         
         try:
             if self.scheduler:
+                # 同时运行服务器和调度器
                 await asyncio.gather(
-                    self._shutdown_event.wait(),
+                    server.wait_closed(),
                     self.scheduler.run(self.memo_db)
                 )
             else:
-                await self._shutdown_event.wait()
+                # 只运行服务器
+                await server.wait_closed()
         finally:
             if self.scheduler:
                 self.scheduler.stop()
-            server.close()
-            await server.wait_closed()
-            self.logger.info("WebSocket服务器已停止")
     
     def run(self):
         """运行WebSocket服务器"""
         self.add_ai()
         self.show_welcome_message()
         
+        # 检查过期任务
         overdue = self.memo_db.get_overdue_memos()
         if overdue:
             print(f"\n⏰ {i18n.get('overdue_found', len(overdue))}")
@@ -7984,7 +7355,9 @@ class EnhancedAIManager:
             if len(overdue) > 5:
                 print(f"  ... {i18n.get('more_skills', len(overdue)-5)}")
         
+        # 运行WebSocket服务器
         try:
+            # 使用 asyncio.run() 运行服务器
             asyncio.run(self.websocket_server())
         except KeyboardInterrupt:
             print(f"\n\n{i18n.get('user_interrupted')}")
@@ -7993,6 +7366,8 @@ class EnhancedAIManager:
             print(f"\n{i18n.get('error_prefix')}{e}")
             import traceback
             traceback.print_exc()
+
+
 # ==================== 命令行参数处理 ====================
 
 def parse_args():
