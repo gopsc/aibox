@@ -154,7 +154,7 @@ class I18n:
                 'command_stream_disable': "  可以通过 stream=false 参数关闭实时输出",
                 'skills_extension': "🔧 扩展技能:",
                 'skills_desc': "  将Python脚本放入 ~/.aibox/skills/ 目录",
-                'skills_interface_desc': "  脚本需要实现 --description, --parameters, --execute 接口",
+                'skills_interface_desc': "  可执行文件需支持 --help 选项，第一行为简介，其余为完整使用说明",
                 'skills_reloaded': "✅ 技能已重新加载 ({} 个)",
                 'skills_reload_failed': "❌ 技能重载失败: {}",
                 'skills_reload_success': "✅ 技能热重载成功，当前共有 {} 个扩展技能",
@@ -314,7 +314,7 @@ class I18n:
                 'command_stream_disable': "  You can disable real-time output with stream=false parameter",
                 'skills_extension': "🔧 Extension skills:",
                 'skills_desc': "  Put Python scripts in ~/.aibox/skills/ directory",
-                'skills_interface_desc': "  Scripts need to implement --description, --parameters, --execute interfaces",
+                'skills_interface_desc': "  Executables must support --help; first line is the summary, rest is the full manual",
                 'skills_reloaded': "✅ Skills reloaded ({})",
                 'skills_reload_failed': "❌ Skills reload failed: {}",
                 'skills_reload_success': "✅ Skills hot-reloaded successfully, now {} extension skills available",
@@ -800,18 +800,22 @@ run_command command="python script.py" stream=true
                 'content': """# 扩展技能能力
 
 ## 动态加载
-系统会自动加载 `~/.aibox/skills/` 目录下的Python脚本作为扩展工具。
+系统会自动扫描 `~/.aibox/skills/` 目录下的可执行文件作为扩展技能。
 
 ## 技能接口要求
-每个技能脚本需要实现：
-- `--description`: 返回技能描述
-- `--parameters`: 返回参数定义（JSON格式）
-- `--execute`: 执行技能逻辑
+每个技能只需支持一个接口：
+- `--help`：输出该技能的完整使用说明，**第一行为一句话简介**，其余为参数说明和示例
+
+系统启动时会对所有技能执行 `--help`，取第一行作为简介摘要，无需再实现 `--description`、`--parameters`、`--execute` 接口。
+
+## 如何使用扩展技能
+1. 使用 `search_skills` 工具搜索关键字，获取匹配技能的名称和简介列表（传入空字符串可列出全部）。
+2. 对目标技能，通过 `run_command` 执行 `技能名 --help`，获取完整命令手册。
+3. 按照手册说明，使用 `run_command` 以正确的命令行格式调用该技能。
 
 ## 热重载
 添加、修改或删除技能后，可以使用 `reload_skills` 工具立即生效，无需重启系统。
 
-## 使用示例
 ```
 reload_skills confirm=true
 ```
