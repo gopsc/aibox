@@ -1093,9 +1093,9 @@ class ConfigManager:
                 "broadcast_enabled": True
             },
             "api": {
-                "deepseek_api_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-                "deepseek_model": "doubao-seed-2-0-mini-260215",
-                "api_key_env": "ARK_API_KEY",
+                "deepseek_api_url": "https://api.deepseek.com/chat/completions",
+                "deepseek_model": "deepseek-chat",
+                "api_key_env": "DEEPSEEK_API_KEY",
                 "timeout": 30,
                 "temperature": 0.7
             },
