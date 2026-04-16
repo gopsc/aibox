@@ -808,10 +808,17 @@ run_command command="python script.py" stream=true
 
 系统启动时会对所有技能执行 `--help`，取第一行作为简介摘要，无需再实现 `--description`、`--parameters`、`--execute` 接口。
 
-## 如何使用扩展技能
+## 如何搜索和调用扩展技能
 1. 使用 `search_skills` 工具搜索关键字，获取匹配技能的名称和简介列表（传入空字符串可列出全部）。
 2. 对目标技能，通过 `run_command` 执行 `技能名 --help`，获取完整命令手册。
 3. 按照手册说明，使用 `run_command` 以正确的命令行格式调用该技能。
+
+## 如何安装新技能
+调用 `install_skill` 工具，获取完整的安装步骤指引（可选传入技能文件路径）：
+```
+install_skill skill_path="/path/to/your_skill.py"
+```
+指引内容包括：可执行性检查、`--help` 验证、复制到技能目录并去掉扩展名、热重载。
 
 ## 热重载
 添加、修改或删除技能后，可以使用 `reload_skills` 工具立即生效，无需重启系统。
@@ -4036,6 +4043,109 @@ class ReloadSkillsTool(Tool):
         output_queue.put(("complete", result))
 
 
+# ==================== 安装技能工具 ====================
+
+class InstallSkillTool(Tool):
+    """技能安装指引工具 - 返回如何将可执行文件/脚本安装为扩展技能的说明"""
+
+    def get_name(self) -> str:
+        return "install_skill"
+
+    def get_description(self) -> str:
+        return (
+            "技能安装指引工具。\n"
+            "返回将可执行文件或脚本安装为扩展技能的完整步骤说明，"
+            "包括可执行性检查、--help 验证和部署方法。"
+        )
+
+    def get_parameters(self) -> Dict:
+        return {
+            "type": "object",
+            "properties": {
+                "skill_path": {
+                    "type": "string",
+                    "description": (
+                        "待安装的技能文件路径（可选）。"
+                        "若提供，说明中会带入该路径作为示例；"
+                        "不提供则返回通用说明。"
+                    )
+                }
+            },
+            "required": []
+        }
+
+    def execute(self, skill_path: str = "", **kwargs) -> str:
+        skills_dir = constants.SKILLS_DIR
+
+        # 如果给了具体路径，在说明里带入，否则用占位符
+        src = skill_path.strip() if skill_path else "/path/to/your_skill"
+        # 去掉扩展名作为目标名称示例
+        base = os.path.splitext(os.path.basename(src))[0] if src else "your_skill"
+        dst = os.path.join(skills_dir, base)
+
+        guide = f"""📦 扩展技能安装指引
+{"=" * 55}
+
+要将一个可执行文件或脚本安装为扩展技能，请按以下步骤操作：
+
+─────────────────────────────────────────────────────
+步骤 1：确认文件可执行
+─────────────────────────────────────────────────────
+运行以下命令，确认文件有可执行权限：
+
+  ls -l {src}
+
+如果没有执行权限，使用以下命令添加：
+
+  chmod +x {src}
+
+然后直接运行一次，确认不会报错：
+
+  {src}
+
+─────────────────────────────────────────────────────
+步骤 2：验证 --help 输出是否完整
+─────────────────────────────────────────────────────
+技能必须支持 --help 选项，且：
+  • 第一行是一句话简介（系统用它作为技能摘要）
+  • 其余行说明参数用法和使用示例
+
+运行以下命令验证：
+
+  {src} --help
+
+确认输出的第一行能清楚描述该技能的用途。
+
+─────────────────────────────────────────────────────
+步骤 3：复制到技能目录并去掉扩展名
+─────────────────────────────────────────────────────
+技能目录：{skills_dir}
+
+复制命令（自动去掉扩展名）：
+
+  cp {src} {dst}
+  chmod +x {dst}
+
+⚠️  注意：目标文件名不能有扩展名（如 .py、.sh），
+    系统以纯文件名作为技能名称。
+
+─────────────────────────────────────────────────────
+步骤 4：让系统识别新技能
+─────────────────────────────────────────────────────
+复制完成后，调用热重载工具使其立即生效：
+
+  reload_skills confirm=true
+
+之后可用 search_skills 验证技能已加载：
+
+  search_skills keyword="{base}"
+
+{"=" * 55}
+完成以上步骤后，即可通过 run_command 直接调用该技能。"""
+
+        return guide
+
+
 # ==================== 更新身份工具 ====================
 
 class UpdateIdentityTool(Tool):
@@ -6024,8 +6134,9 @@ class DeepSeekChat:
         if exit_callback and self.memory_db:
             builtin_tools.append(SaveMemoryAndEndConversationTool(exit_callback, self.memory_db, self.prompt_manager, self.logger))
         
-        # 添加技能热重载工具
+        # 添加技能热重载工具 & 技能安装指引工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
+        builtin_tools.append(InstallSkillTool(self.logger))
         
         # 注册内置工具（标记为内置）
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
