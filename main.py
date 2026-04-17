@@ -7107,10 +7107,7 @@ class WebSocketHandler:
         elif command == "/tasks":
             if self.ai_manager.scheduler:
                 stats = self.ai_manager.scheduler.get_stats()
-                result = f"\n{i18n.get('task_stats', 
-                                        stats.get('total_executions', 0),
-                                        stats.get('total_executions', 0),
-                                        stats.get('total_executions', 0))}\n\n"
+                result = f"\n{i18n.get('task_stats', stats.get('total_executions', 0), stats.get('total_executions', 0), stats.get('total_executions', 0))}\n\n"
                 
                 pending = self.ai_manager.memo_db.get_pending_tasks_for_user()
                 result += f"待执行任务: {len(pending)} 个\n"
