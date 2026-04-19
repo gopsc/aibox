@@ -813,7 +813,22 @@ run_command command="python script.py" stream=true
 2. 对目标技能，通过 `run_command` 执行 `技能名 --help`，获取完整命令手册。
 3. 按照手册说明，使用 `run_command` 以正确的命令行格式调用该技能。
 
-## 如何安装新技能
+## 如何创建新技能（AI自主编写）
+调用 `create_skill` 工具，工具会返回一段指令提示词，指导你自行完成脚本的编写和部署：
+```
+create_skill skill_name="my-tool" description="一个将摄氏度转换为华氏度的工具，接受 -t 参数输入温度值"
+```
+- `skill_name`：技能名称（字母/数字/连字符/下划线，无扩展名）
+- `description`：对技能功能的详细需求描述，越详细越好
+
+收到提示词后，你需要依次：
+1. 自行编写满足接口要求的 Python 脚本
+2. 用 `write_file` 写入 `~/.aibox/skills/<skill_name>`
+3. 用 `run_command` 执行 `chmod +x` 赋权
+4. 用 `run_command` 执行 `<skill_name> --help` 验证
+5. 调用 `reload_skills` 热重载
+
+## 如何手动安装新技能
 调用 `install_skill` 工具，获取完整的安装步骤指引（可选传入技能文件路径）：
 ```
 install_skill skill_path="/path/to/your_skill.py"
@@ -4146,6 +4161,115 @@ class InstallSkillTool(Tool):
         return guide
 
 
+# ==================== 创建扩展技能工具 ====================
+
+class CreateSkillTool(Tool):
+    """创建扩展技能工具 - 返回提示词，驱动智能体自行编写并部署可执行脚本。
+
+    工具本身不调用 LLM，只输出一段结构化的指令提示词。
+    智能体读到提示词后，会自行：
+      1. 编写满足接口要求的 Python 脚本
+      2. 用 write_file 写入 ~/.aibox/skills/<skill_name>
+      3. 用 run_command 赋予可执行权限
+      4. 调用 reload_skills 热重载
+    """
+
+    def get_name(self) -> str:
+        return "create_skill"
+
+    def get_description(self) -> str:
+        return (
+            "创建扩展技能工具。\n"
+            "返回一段指令提示词，驱动你自行编写并部署一个满足技能接口要求的可执行脚本。\n\n"
+            "脚本接口要求：\n"
+            "  • 首行 shebang：#!/usr/bin/env python3\n"
+            "  • 支持 --help 选项（使用 argparse）\n"
+            "  • --help 输出的第一行（argparse description）必须是该技能的一句话简介\n"
+            "  • epilog 中包含完整的参数说明和至少一个使用示例"
+        )
+
+    def get_parameters(self) -> Dict:
+        return {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": (
+                        "技能名称（部署后的文件名，不含扩展名）。"
+                        "只能包含字母、数字、连字符和下划线，例如：fetch-weather、calc-bmi。"
+                    )
+                },
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "对该技能的详细需求描述：它应该做什么、接受哪些输入参数、"
+                        "返回什么输出、有哪些典型使用场景。描述越详细，生成质量越高。"
+                    )
+                }
+            },
+            "required": ["skill_name", "description"]
+        }
+
+    def execute(self, skill_name: str = "", description: str = "", **kwargs) -> str:
+        # ---- 参数校验 ----
+        if not skill_name or not skill_name.strip():
+            return "❌ 错误：skill_name 不能为空"
+        if not description or not description.strip():
+            return "❌ 错误：description 不能为空"
+        if not re.match(r'^[A-Za-z0-9_\-]+$', skill_name.strip()):
+            return "❌ 错误：skill_name 只能包含字母、数字、连字符(-)和下划线(_)"
+
+        skill_name = skill_name.strip()
+        skills_dir = constants.SKILLS_DIR
+        skill_path = os.path.join(skills_dir, skill_name)
+
+        # ---- 返回给智能体的指令提示词 ----
+        prompt = f"""【任务】创建扩展技能：{skill_name}
+
+请按照以下步骤，自行完成该扩展技能的编写和部署：
+
+─────────────────────────────────────────────────
+步骤 1：编写 Python 脚本
+─────────────────────────────────────────────────
+根据以下需求，编写一个完整可运行的 Python 3 脚本：
+
+需求描述：
+{description.strip()}
+
+脚本必须满足的接口约定：
+1. 第一行为 shebang：#!/usr/bin/env python3
+2. 使用 argparse 实现 --help 选项，其中：
+   - ArgumentParser 的 description 参数填写对该脚本功能的一句话简介（这是 --help 的第一行，系统会用它作为技能摘要）
+   - epilog 参数中包含完整的参数说明和至少一个使用示例
+3. 功能完整可运行，包含必要的错误处理
+
+─────────────────────────────────────────────────
+步骤 2：写入技能目录
+─────────────────────────────────────────────────
+使用 write_file 工具，将完整脚本内容写入：
+  {skill_path}
+
+─────────────────────────────────────────────────
+步骤 3：赋予可执行权限
+─────────────────────────────────────────────────
+使用 run_command 工具执行：
+  chmod +x {skill_path}
+
+─────────────────────────────────────────────────
+步骤 4：验证并热重载
+─────────────────────────────────────────────────
+使用 run_command 工具执行以下命令验证 --help 输出是否正常：
+  {skill_path} --help
+
+确认无误后，调用 reload_skills 工具使新技能立即生效：
+  reload_skills confirm=true
+
+─────────────────────────────────────────────────
+完成后请告知用户技能已创建成功，并展示 --help 的第一行简介。"""
+
+        return prompt
+
+
 # ==================== 更新身份工具 ====================
 
 class UpdateIdentityTool(Tool):
@@ -6134,9 +6258,10 @@ class DeepSeekChat:
         if exit_callback and self.memory_db:
             builtin_tools.append(SaveMemoryAndEndConversationTool(exit_callback, self.memory_db, self.prompt_manager, self.logger))
         
-        # 添加技能热重载工具 & 技能安装指引工具
+        # 添加技能热重载工具 & 技能安装指引工具 & 创建技能工具
         builtin_tools.append(ReloadSkillsTool(self.tool_registry, self.logger))
         builtin_tools.append(InstallSkillTool(self.logger))
+        builtin_tools.append(CreateSkillTool(self.logger))
         
         # 注册内置工具（标记为内置）
         self.tool_registry.register_many(builtin_tools, is_builtin=True)
