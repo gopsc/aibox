@@ -1,118 +1,100 @@
 # 单AI智能体系统 - WebSocket版本
 
-一个功能强大的AI智能体系统，支持文件操作、网页访问、记忆管理、任务调度等功能，通过WebSocket与客户端实时通信。
+一个功能强大的AI智能体系统，通过WebSocket与客户端交互，支持文件操作、网页访问、记忆管理、定时任务等功能。
 
-## ✨ 主要特性
+## ✨ 核心特性
 
-### 核心功能
-- **智能对话**：基于DeepSeek API的AI对话能力
-- **工具调用**：支持多种内置工具和扩展技能
-- **记忆管理**：自动保存和检索对话记忆，保持对话连贯性
-- **任务调度**：支持定时任务和即时任务，自动执行
-- **实时通信**：WebSocket实时双向通信，支持流式输出
+- 🤖 **单AI智能体**：基于DeepSeek API的智能对话系统
+- 🔌 **WebSocket通信**：实时双向通信，支持流式输出
+- 📁 **文件操作**：读写文件、目录列表（支持大文件分页）
+- 🌐 **网页访问**：获取网页内容、提取链接、搜索信息
+- 🧠 **记忆管理**：自动保存和检索对话记忆，保持对话连贯性
+- ⏰ **定时任务**：支持一次性、重复、即时任务，自动触发AI对话
+- 🔧 **扩展技能**：动态加载`~/.aibox/skills/`目录下的可执行脚本
+- 📝 **对话压缩**：当消息过多时自动压缩，保持上下文质量
+- 🌍 **多语言支持**：自动检测系统语言，支持中英文
 
-### 工具能力
-| 工具 | 功能 |
-|------|------|
-| 📁 文件操作 | 读取、写入、列出目录 |
-| 🌐 网页访问 | 获取网页内容、提取标题/链接 |
-| 🧠 记忆管理 | 保存、搜索、删除记忆 |
-| 📋 任务管理 | 创建、完成、查询定时/即时任务 |
-| 🔧 命令执行 | 执行系统命令，支持流式输出 |
-| 🎯 扩展技能 | 动态加载Python脚本作为技能 |
+## 🚀 快速开始
 
-### 高级特性
-- **对话压缩**：自动压缩过长对话，节省Token
-- **热重载**：技能文件修改后无需重启即可生效
-- **多语言**：自动检测系统语言，支持中文/英文
-- **历史归档**：自动保存对话历史，支持查询
-
-## 📋 系统要求
+### 环境要求
 
 - Python 3.8+
 - DeepSeek API Key
 
-## 🚀 快速开始
-
-### 1. 安装依赖
+### 安装
 
 ```bash
+# 克隆或下载代码
+# 安装依赖
 pip install websockets requests beautifulsoup4
 ```
 
-### 2. 配置API Key
+### 配置
 
-设置环境变量或创建配置文件：
-
+1. 设置DeepSeek API Key：
 ```bash
 export DEEPSEEK_API_KEY="your-api-key"
 ```
 
-### 3. 启动服务器
+2. （可选）配置文件：`~/.aibox/config.json`（系统会自动创建默认配置）
+
+### 启动服务器
 
 ```bash
-python main.py
+python agent.py
 ```
 
-### 4. 连接客户端
-
-使用WebSocket客户端连接：`ws://localhost:8765`
-
-## ⚙️ 配置
-
-### 配置文件位置
-`~/.aibox/config.json`（自动创建）
-
-### 主要配置项
-
-```json
-{
-  "system": {
-    "save_dir": "~/.aibox",           // 数据存储目录
-    "skills_dir": "~/.aibox/skills",   // 扩展技能目录
-    "prompts_dir": "~/.aibox/prompts", // 提示词目录
-    "websocket_host": "localhost",     // WebSocket主机
-    "websocket_port": 8765             // WebSocket端口
-  },
-  "api": {
-    "deepseek_model": "deepseek-chat", // AI模型
-    "temperature": 0.7                // 回答温度
-  },
-  "context": {
-    "compress_message_threshold": 100, // 消息压缩阈值
-    "max_context_messages": 120        // 最大上下文消息数
-  },
-  "scheduler": {
-    "enabled": true,                   // 启用任务调度器
-    "check_interval": 1.0             // 检查间隔（秒）
-  }
-}
-```
+启动后，WebSocket服务器将运行在 `ws://localhost:8765`
 
 ## 📁 目录结构
 
 ```
 ~/.aibox/
-├── config.json           # 配置文件
-├── memories.db           # 记忆和任务数据库
-├── current_conversation.json  # 当前对话
-├── archive/              # 历史对话归档
-├── prompts/              # 系统提示词目录
-│   ├── 00_IDENTITY.md    # 用户身份信息
+├── config.json          # 配置文件
+├── prompts/             # 系统提示词目录
+│   ├── 00_IDENTITY.md   # 用户身份信息
 │   ├── 1_*.md           # 基础技能提示词
-│   ├── 99_SOUL.md        # 智能体自我定义
-│   └── 100_STATUS.md     # 智能体状态
-├── skills/               # 扩展技能目录
-└── tool_results/         # 工具结果缓存
+│   ├── 99_SOUL.md       # AI灵魂定义（角色、性格）
+│   └── 100_STATUS.md    # AI状态记录
+├── skills/              # 扩展技能目录
+├── memories.db          # 记忆数据库
+├── archive/             # 对话归档目录
+└── tool_results/        # 工具结果缓存
 ```
 
-## 💬 WebSocket协议
+## 🔧 可用工具
+
+AI智能体可以调用以下工具来完成任务：
+
+| 工具名称 | 功能描述 |
+|---------|---------|
+| `read_file` | 读取文件内容（支持分页） |
+| `write_file` | 写入或追加文件 |
+| `list_files` | 列出目录内容 |
+| `web` | 访问网页、获取标题/文本/链接 |
+| `memory` | 保存、搜索、删除记忆 |
+| `memo` | 创建、查看、完成任务 |
+| `run_command` | 执行系统命令（实时输出） |
+| `search_skills` | 搜索扩展技能 |
+| `reload_skills` | 热重载扩展技能 |
+| `create_skill` | 创建新技能（AI自主编写） |
+| `update_identity` | 更新用户身份信息 |
+| `update_soul` | 更新AI自我定义 |
+| `save_memory_and_end_conversation` | 保存记忆并结束对话 |
+| `get_current_time` | 获取当前时间 |
+| `calculator` | 数学计算 |
+
+## 💬 WebSocket API
+
+### 连接
+
+```javascript
+const ws = new WebSocket('ws://localhost:8765');
+```
 
 ### 消息格式
 
-#### 发送消息（客户端 → 服务器）
-
-**普通对话**
+#### 发送用户消息
 ```json
 {
   "type": "message",
@@ -120,7 +102,7 @@ python main.py
 }
 ```
 
-**命令**
+#### 发送命令
 ```json
 {
   "type": "command",
@@ -128,215 +110,167 @@ python main.py
 }
 ```
 
-**添加任务**
+#### 发送任务
 ```json
 {
   "type": "task",
   "action": "add",
   "title": "提醒我喝水",
-  "delay": 3600,
-  "repeat_type": "daily"
+  "delay": 3600
 }
 ```
 
-**即时任务**
+### 支持的命令
+
+| 命令 | 功能 |
+|-----|------|
+| `/exit` | 退出连接 |
+| `/new` | 开始新对话（保存当前，重置记忆） |
+| `/list` | 列出所有对话 |
+| `/memories` | 查看最近记忆 |
+| `/memos` | 查看待办任务 |
+| `/search <关键词>` | 搜索记忆 |
+| `/config` | 查看配置 |
+| `/reload` | 重载配置 |
+| `/reload_prompts` | 重载提示词 |
+| `/check` | 检查过期任务 |
+| `/tasks` | 查看任务状态 |
+| `/help` | 显示帮助 |
+
+### 接收消息类型
+
+| 类型 | 说明 |
+|-----|------|
+| `chunk` | AI响应的片段（流式输出） |
+| `complete` | AI响应完成 |
+| `error` | 错误信息 |
+| `command_result` | 命令执行结果 |
+| `task_status` | 任务状态更新 |
+| `dialogue_ended` | 对话结束通知 |
+
+## ⏰ 任务系统
+
+### 任务类型
+
+1. **一次性任务**：在指定时间执行一次
+2. **重复任务**：daily/weekly/monthly/自定义间隔
+3. **即时任务**：立即执行（`is_immediate: true`）
+
+### 添加任务示例
+
 ```json
 {
   "type": "task",
   "action": "add",
-  "title": "立即执行的任务",
+  "title": "每天提醒",
+  "repeat_type": "daily"
+}
+```
+
+```json
+{
+  "type": "task",
+  "action": "add",
+  "title": "5分钟后提醒",
+  "delay": 300
+}
+```
+
+```json
+{
+  "type": "task",
+  "action": "add",
+  "title": "立即执行",
   "is_immediate": true
 }
 ```
 
-#### 接收消息（服务器 → 客户端）
+## 🔧 扩展技能
 
-**流式响应**
-```json
-{"type": "chunk", "content": "你好，"}
-{"type": "chunk", "content": "我是AI助手"}
-{"type": "complete", "content": "完整响应"}
+### 添加自定义技能
+
+将可执行脚本放入 `~/.aibox/skills/` 目录，系统会自动识别。
+
+**技能接口要求**：
+- 支持 `--help` 参数
+- `--help` 第一行为一句话简介
+- 其余为完整的参数说明和使用示例
+
+### 让AI创建技能
+
+直接告诉AI：
+```
+创建一个技能，功能是将摄氏度转换为华氏度，接受 -c 参数输入温度
 ```
 
-**任务状态**
+AI会自动编写脚本并部署。
+
+## ⚙️ 配置说明
+
+主要配置项（`~/.aibox/config.json`）：
+
 ```json
 {
-  "type": "task_status",
-  "task_id": 1,
-  "title": "提醒喝水",
-  "status": "executing",
-  "message": "正在执行..."
+  "system": {
+    "save_dir": "~/.aibox",
+    "websocket_host": "localhost",
+    "websocket_port": 8765,
+    "debug_level": 1
+  },
+  "context": {
+    "max_history_messages": 500,
+    "compress_enabled": true,
+    "compress_message_threshold": 100
+  },
+  "scheduler": {
+    "enabled": true,
+    "check_interval": 1.0
+  }
 }
 ```
 
-**错误信息**
-```json
-{"type": "error", "content": "错误描述"}
-```
+## 🧠 对话压缩
 
-## 🛠️ 支持的命令
+当对话消息数达到阈值（默认100条）时，系统会自动：
+1. 调用AI压缩早期对话内容
+2. 保留最近的重要消息
+3. 将压缩摘要作为系统消息
 
-| 命令 | 说明 |
-|------|------|
-| `/new` | 开始新对话（保存当前对话，重置AI） |
-| `/list` | 列出所有历史对话 |
-| `/memories` | 查看最近的记忆 |
-| `/memos` | 查看待办任务 |
-| `/search <关键词>` | 搜索记忆 |
-| `/config` | 查看当前配置 |
-| `/reload` | 重新加载配置 |
-| `/reload_prompts` | 重新加载提示词 |
-| `/check` | 检查过期任务 |
-| `/tasks` | 查看任务调度器状态 |
-| `/exit` | 断开连接 |
-| `/help` | 显示帮助 |
+压缩过程静默执行，不影响用户体验。
 
-## 🧩 扩展技能开发
+## 📝 提示词系统
 
-### 创建技能
+提示词文件位于 `~/.aibox/prompts/`：
 
-1. 在 `~/.aibox/skills/` 目录下放置可执行脚本
-2. 脚本必须支持 `--help` 参数
-3. `--help` 输出**第一行**为技能简介，其余为使用说明
+- `00_IDENTITY.md`：用户身份信息（AI可通过工具更新）
+- `1_*.md`：基础技能提示词（文件操作、网页访问等）
+- `99_SOUL.md`：AI灵魂定义（角色、性格、能力边界）
+- `100_STATUS.md`：AI状态记录
 
-### 技能示例（Python）
+AI可以使用 `update_identity` 和 `update_soul` 工具动态更新自己的定义。
 
-```python
-#!/usr/bin/env python3
-"""
-示例技能 - 计算两个数字的和
-"""
-
-import sys
-import argparse
-
-def main():
-    parser = argparse.ArgumentParser(description="计算两个数字的和")
-    parser.add_argument("--a", type=float, required=True, help="第一个数字")
-    parser.add_argument("--b", type=float, required=True, help="第二个数字")
-    args = parser.parse_args()
-    
-    result = args.a + args.b
-    print(f"{args.a} + {args.b} = {result}")
-
-if __name__ == "__main__":
-    main()
-```
-
-### 使用技能
+## 🛠️ 命令行参数
 
 ```bash
-# 1. 确保脚本可执行
-chmod +x ~/.aibox/skills/adder
-
-# 2. 重载技能（在对话中）
-用户: reload_skills confirm=true
-
-# 3. 搜索技能
-用户: search_skills keyword="计算"
-
-# 4. 查看帮助
-用户: run_command command="adder --help"
-
-# 5. 执行技能
-用户: run_command command="adder --a 10 --b 20"
-```
-
-## 📝 提示词定制
-
-### 目录结构
-
-```
-~/.aibox/prompts/
-├── 00_IDENTITY.md    # 用户身份信息
-├── 1_*.md           # 基础技能（以1_开头）
-├── 99_SOUL.md        # AI角色定义
-└── 100_STATUS.md     # AI状态记录
-```
-
-### 自定义AI性格
-
-编辑 `99_SOUL.md` 文件，定义：
-- 核心身份和角色定位
-- 性格特点
-- 能力边界
-- 行为准则
-- 工作流程
-
-## 🔧 命令行选项
-
-```bash
-python main.py [选项]
+python agent.py [选项]
 
 选项:
   --verbose, -v        显示详细日志
   --debug LEVEL        调试级别 (0-3)
-  --config PATH        指定配置文件路径
+  --lang zh|en         强制语言
   --host HOST          WebSocket主机
   --port PORT          WebSocket端口
-  --lang zh|en         强制语言
   --no-scheduler       禁用任务调度器
-  --scheduler-interval 调度器检查间隔
-  
-  # 任务管理
-  --memo-list          列出所有任务
+  --check-memo         检查到期任务
   --memo-add "标题|内容|时间"  添加任务
+  --memo-list          列出任务
   --memo-complete ID   完成任务
-  --check-memo         检查过期任务
 ```
-
-## 🔄 工作流程
-
-```
-用户 ──WebSocket──→ 服务器 ──API调用──→ DeepSeek API
-                          │
-                          ↓
-                    工具执行器
-                    ├── 文件操作
-                    ├── 网页访问
-                    ├── 命令执行
-                    ├── 记忆管理
-                    └── 任务调度器
-                          │
-                          ↓
-用户 ←──WebSocket── 服务器 ←── 结果 ──┘
-```
-
-## 📊 任务类型
-
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| 一次性 | 执行一次后自动完成 | `delay: 3600` |
-| 每日 | 每天同一时间执行 | `repeat_type: "daily"` |
-| 每周 | 每周同一时间执行 | `repeat_type: "weekly"` |
-| 每月 | 每月同一时间执行 | `repeat_type: "monthly"` |
-| 自定义 | 自定义间隔 | `repeat_type: "custom", repeat_interval: 5, repeat_interval_unit: "minutes"` |
-| 即时 | 立即执行 | `is_immediate: true` |
-
-## ❓ 常见问题
-
-### Q: 如何查看API Key是否正确配置？
-```bash
-echo $DEEPSEEK_API_KEY
-```
-
-### Q: 技能不生效？
-1. 确认文件可执行：`chmod +x 脚本名`
-2. 确认支持`--help`参数
-3. 调用`reload_skills confirm=true`重载
-4. 检查`~/.aibox/skills/`目录
-
-### Q: 如何备份数据？
-备份 `~/.aibox/` 目录即可
-
-### Q: 对话历史保存在哪里？
-- 当前对话：`~/.aibox/current_conversation.json`
-- 历史归档：`~/.aibox/archive/`
 
 ## 📄 许可证
 
 MIT License
 
----
+## 🤝 贡献
 
-**提示**：首次启动会自动创建配置目录和默认提示词文件，可以根据需要修改定制。
+欢迎提交Issue和Pull Request！
