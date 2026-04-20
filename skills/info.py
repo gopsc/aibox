@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""
-系统信息工具 - 获取系统状态信息
-功能：获取系统运行时间、CPU使用率、内存使用情况、磁盘使用情况等
-"""
+"""系统信息工具 - 获取系统运行时间、CPU、内存、磁盘、网络等状态信息。"""
 
 import sys
-import json
 import argparse
 import platform
-import psutil
 import datetime
 import os
+
+try:
+    import psutil
+except ImportError:
+    print("❌ 缺少依赖库: psutil。请运行: pip install psutil")
+    sys.exit(1)
 
 
 def get_system_info():
@@ -20,7 +21,7 @@ def get_system_info():
         "主机名": platform.node(),
         "版本": platform.version(),
         "架构": platform.machine(),
-        "处理器": platform.processor(),
+        "处理器": platform.processor() or "未知",
         "Python版本": platform.python_version()
     }
 
@@ -55,30 +56,57 @@ def get_cpu_info():
 def get_memory_info():
     """获取内存信息"""
     mem = psutil.virtual_memory()
+    swap = psutil.swap_memory()
     return {
         "总内存": f"{mem.total / (1024**3):.2f} GB",
         "可用内存": f"{mem.available / (1024**3):.2f} GB",
         "已用内存": f"{mem.used / (1024**3):.2f} GB",
-        "使用率": f"{mem.percent}%"
+        "内存使用率": f"{mem.percent}%",
+        "交换分区总大小": f"{swap.total / (1024**3):.2f} GB" if swap.total > 0 else "无",
+        "交换分区使用率": f"{swap.percent}%" if swap.total > 0 else "无"
     }
 
 
 def get_disk_info(path="/"):
     """获取磁盘信息"""
-    disk = psutil.disk_usage(path)
-    return {
-        "路径": path,
-        "总空间": f"{disk.total / (1024**3):.2f} GB",
-        "已用空间": f"{disk.used / (1024**3):.2f} GB",
-        "可用空间": f"{disk.free / (1024**3):.2f} GB",
-        "使用率": f"{disk.percent}%"
-    }
+    try:
+        disk = psutil.disk_usage(path)
+        return {
+            "路径": path,
+            "总空间": f"{disk.total / (1024**3):.2f} GB",
+            "已用空间": f"{disk.used / (1024**3):.2f} GB",
+            "可用空间": f"{disk.free / (1024**3):.2f} GB",
+            "使用率": f"{disk.percent}%"
+        }
+    except Exception as e:
+        return {"错误": f"无法获取磁盘信息: {str(e)}"}
 
 
-def get_process_count():
-    """获取进程数量"""
+def get_all_disks():
+    """获取所有磁盘分区信息"""
+    partitions = []
+    for part in psutil.disk_partitions():
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            partitions.append({
+                "挂载点": part.mountpoint,
+                "文件系统": part.fstype,
+                "总空间": f"{usage.total / (1024**3):.2f} GB",
+                "已用空间": f"{usage.used / (1024**3):.2f} GB",
+                "可用空间": f"{usage.free / (1024**3):.2f} GB",
+                "使用率": f"{usage.percent}%"
+            })
+        except:
+            continue
+    return partitions
+
+
+def get_process_info():
+    """获取进程信息"""
     return {
-        "进程数": len(psutil.pids())
+        "进程总数": len(psutil.pids()),
+        "运行中进程": sum(1 for p in psutil.process_iter(['status']) if p.info['status'] == 'running'),
+        "睡眠进程": sum(1 for p in psutil.process_iter(['status']) if p.info['status'] == 'sleeping')
     }
 
 
@@ -107,139 +135,150 @@ def get_load_average():
         return {"信息": "系统负载信息在Windows上不可用"}
 
 
-def format_output(data, format_type="text"):
+def get_temperature_info():
+    """获取温度信息（仅部分系统支持）"""
+    try:
+        temps = psutil.sensors_temperatures()
+        if not temps:
+            return {"信息": "温度传感器信息不可用"}
+        
+        result = {}
+        for name, entries in temps.items():
+            for entry in entries:
+                result[f"{name}"] = f"{entry.current}°C"
+                if hasattr(entry, 'high') and entry.high:
+                    result[f"{name}_警告阈值"] = f"{entry.high}°C"
+                break
+        return result
+    except:
+        return {"信息": "温度传感器信息不可用"}
+
+
+def get_battery_info():
+    """获取电池信息（仅笔记本）"""
+    try:
+        battery = psutil.sensors_battery()
+        if not battery:
+            return {"信息": "电池信息不可用（可能是台式机）"}
+        
+        return {
+            "电量百分比": f"{battery.percent}%",
+            "充电中": "是" if battery.power_plugged else "否",
+            "剩余时间": str(datetime.timedelta(seconds=battery.secsleft)) if battery.secsleft != -1 else "未知"
+        }
+    except:
+        return {"信息": "电池信息不可用"}
+
+
+def format_output(data, output_format="text"):
     """格式化输出"""
-    if format_type == "json":
+    if output_format == "json":
+        import json
         return json.dumps(data, ensure_ascii=False, indent=2)
     else:
         lines = []
         for key, value in data.items():
-            lines.append(f"{key}: {value}")
+            if isinstance(value, dict):
+                lines.append(f"\n📁 {key}:")
+                for k, v in value.items():
+                    lines.append(f"   {k}: {v}")
+            else:
+                lines.append(f"{key}: {value}")
         return "\n".join(lines)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='系统信息工具 - 获取系统状态信息')
+    parser = argparse.ArgumentParser(
+        description="系统信息工具 - 获取系统运行时间、CPU、内存、磁盘、网络等状态信息。",
+        epilog="""
+使用示例:
+  # 获取系统基本信息
+  sysinfo --info system
+
+  # 获取CPU信息
+  sysinfo --info cpu
+
+  # 获取内存信息
+  sysinfo --info memory
+
+  # 获取指定磁盘信息
+  sysinfo --info disk --disk-path /home
+
+  # 获取所有磁盘分区
+  sysinfo --info disks
+
+  # 获取所有信息（文本格式）
+  sysinfo --info all
+
+  # 获取所有信息（JSON格式）
+  sysinfo --info all --format json
+
+  # 获取系统负载
+  sysinfo --info load
+
+  # 获取温度信息
+  sysinfo --info temperature
+
+  # 获取电池信息
+  sysinfo --info battery
+
+  # 组合多个信息
+  sysinfo --info cpu --info memory --info disk
+        """
+    )
     
-    # 定义所有参数
-    parser.add_argument('--description', action='store_true', help='获取工具描述')
-    parser.add_argument('--parameters', action='store_true', help='获取参数定义')
-    parser.add_argument('--execute', action='store_true', help='执行工具')
-    parser.add_argument('--args', type=str, help='JSON格式的参数')
+    # 支持多个info参数
+    parser.add_argument("--info", "-i", action="append", 
+        choices=["system", "uptime", "cpu", "memory", "disk", "disks", "process", 
+                 "network", "load", "temperature", "battery", "all"],
+        help="要获取的信息类型（可多次使用）")
     
-    # 添加具体的操作参数
-    parser.add_argument('--info', choices=['system', 'uptime', 'cpu', 'memory', 'disk', 'process', 'network', 'load', 'all'], 
-                       help='要获取的信息类型')
-    parser.add_argument('--disk-path', type=str, default='/', help='磁盘检查路径（用于disk信息）')
-    parser.add_argument('--format', choices=['text', 'json'], default='text', help='输出格式')
+    parser.add_argument("--disk-path", "-d", type=str, default="/", 
+        help="磁盘检查路径（用于disk信息）")
+    
+    parser.add_argument("--format", "-f", choices=["text", "json"], default="text", 
+        help="输出格式（默认: text）")
     
     args = parser.parse_args()
     
-    # 处理 --description 参数
-    if args.description:
-        description = """系统信息扩展工具 - 获取系统的各种状态信息
-支持的操作：
-- system: 系统基本信息（操作系统、主机名、版本等）
-- uptime: 系统运行时间
-- cpu: CPU信息（核心数、使用率、频率）
-- memory: 内存使用情况
-- disk: 磁盘使用情况
-- process: 进程数量
-- network: 网络流量统计
-- load: 系统负载（仅Unix系统）
-- all: 所有信息
-
-示例：
-  --info system          # 获取系统基本信息
-  --info cpu             # 获取CPU信息
-  --info memory          # 获取内存信息
-  --info disk --disk-path /home  # 获取指定磁盘信息
-  --info all --format json       # 获取所有信息，JSON格式"""
-        print(description)
-        return
-    
-    # 处理 --parameters 参数
-    if args.parameters:
-        parameters = {
-            "type": "object",
-            "properties": {
-                "info": {
-                    "type": "string",
-                    "enum": ["system", "uptime", "cpu", "memory", "disk", "process", "network", "load", "all"],
-                    "description": "要获取的信息类型"
-                },
-                "disk_path": {
-                    "type": "string",
-                    "description": "磁盘检查路径（当info为disk时使用）",
-                    "default": "/"
-                },
-                "format": {
-                    "type": "string",
-                    "enum": ["text", "json"],
-                    "description": "输出格式",
-                    "default": "text"
-                }
-            },
-            "required": ["info"]
-        }
-        print(json.dumps(parameters, ensure_ascii=False))
-        return
-    
-    # 处理 --execute 参数
-    if args.execute and args.args:
-        try:
-            # 解析参数
-            params = json.loads(args.args)
-            info_type = params.get('info', 'all')
-            disk_path = params.get('disk_path', '/')
-            output_format = params.get('format', 'text')
-            
-            # 收集信息
-            result = {}
-            
-            if info_type == 'system' or info_type == 'all':
-                result['系统信息'] = get_system_info()
-            
-            if info_type == 'uptime' or info_type == 'all':
-                result['运行时间'] = get_uptime()
-            
-            if info_type == 'cpu' or info_type == 'all':
-                result['CPU信息'] = get_cpu_info()
-            
-            if info_type == 'memory' or info_type == 'all':
-                result['内存信息'] = get_memory_info()
-            
-            if info_type == 'disk' or info_type == 'all':
-                result['磁盘信息'] = get_disk_info(disk_path)
-            
-            if info_type == 'process' or info_type == 'all':
-                result['进程信息'] = get_process_count()
-            
-            if info_type == 'network' or info_type == 'all':
-                result['网络信息'] = get_network_info()
-            
-            if info_type == 'load' or info_type == 'all':
-                result['系统负载'] = get_load_average()
-            
-            # 输出结果
-            if output_format == 'json':
-                print(json.dumps(result, ensure_ascii=False, indent=2))
-            else:
-                for category, data in result.items():
-                    print(f"\n【{category}】")
-                    for key, value in data.items():
-                        print(f"  {key}: {value}")
-            
-        except json.JSONDecodeError as e:
-            print(f"❌ 参数解析错误: {e}")
-        except ImportError as e:
-            print(f"❌ 缺少依赖库: {e}。请安装 psutil: pip install psutil")
-        except Exception as e:
-            print(f"❌ 执行错误: {e}")
-    
-    else:
-        # 如果没有指定任何参数，显示帮助
+    # 如果没有指定任何info，显示帮助
+    if not args.info:
         parser.print_help()
+        return
+    
+    # 收集信息
+    result = {}
+    info_types = args.info
+    
+    if "all" in info_types:
+        info_types = ["system", "uptime", "cpu", "memory", "disk", "disks", "process", "network", "load", "temperature", "battery"]
+    
+    for info_type in info_types:
+        if info_type == "system":
+            result["系统信息"] = get_system_info()
+        elif info_type == "uptime":
+            result["运行时间"] = get_uptime()
+        elif info_type == "cpu":
+            result["CPU信息"] = get_cpu_info()
+        elif info_type == "memory":
+            result["内存信息"] = get_memory_info()
+        elif info_type == "disk":
+            result[f"磁盘信息({args.disk_path})"] = get_disk_info(args.disk_path)
+        elif info_type == "disks":
+            result["所有磁盘分区"] = get_all_disks()
+        elif info_type == "process":
+            result["进程信息"] = get_process_info()
+        elif info_type == "network":
+            result["网络信息"] = get_network_info()
+        elif info_type == "load":
+            result["系统负载"] = get_load_average()
+        elif info_type == "temperature":
+            result["温度信息"] = get_temperature_info()
+        elif info_type == "battery":
+            result["电池信息"] = get_battery_info()
+    
+    # 输出结果
+    print(format_output(result, args.format))
 
 
 if __name__ == "__main__":

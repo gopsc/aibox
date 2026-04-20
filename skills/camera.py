@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
-"""
-摄像头拍照工具
-功能：获取相机设备列表、选择指定相机拍照、保存照片到 ~/.aibox/camera 目录
-支持流式输出结果
-"""
+"""摄像头拍照工具 - 获取相机设备列表、选择指定相机拍照、保存照片。"""
 
 import os
 import sys
-import json
 import argparse
 from pathlib import Path
-import cv2
 import time
-import re
+
+try:
+    import cv2
+except ImportError:
+    print("❌ 缺少依赖库: opencv-python。请运行: pip install opencv-python")
+    sys.exit(1)
 
 # 定义默认的截图保存目录
 CAMERA_DIR = os.path.expanduser("~/.aibox/camera")
+
 
 def ensure_camera_dir():
     """确保摄像头照片保存目录存在"""
     os.makedirs(CAMERA_DIR, exist_ok=True)
     return CAMERA_DIR
+
 
 def list_cameras(max_test=10):
     """列出可用的摄像头设备"""
@@ -29,11 +30,9 @@ def list_cameras(max_test=10):
     for i in range(max_test):
         cap = cv2.VideoCapture(i)
         if cap.isOpened():
-            # 获取摄像头信息
             ret, frame = cap.read()
             if ret:
                 height, width = frame.shape[:2]
-                # 尝试获取更详细的摄像头信息
                 backend = cap.getBackendName()
                 
                 camera_info = {
@@ -49,7 +48,6 @@ def list_cameras(max_test=10):
                     if os.path.exists(dev_path):
                         camera_info["device_path"] = dev_path
                         
-                        # 尝试通过udevadm获取更多信息（如果有权限）
                         try:
                             import subprocess
                             result = subprocess.run(
@@ -71,6 +69,7 @@ def list_cameras(max_test=10):
             cap.release()
     
     return available_cameras
+
 
 def get_camera_info(camera_id):
     """获取指定摄像头的详细信息"""
@@ -102,10 +101,9 @@ def get_camera_info(camera_id):
     
     for prop_id, prop_name in properties:
         value = cap.get(prop_id)
-        if value >= 0:  # OpenCV返回负数表示不支持该属性
+        if value >= 0:
             info["properties"][prop_name] = value
     
-    # 测试读取一帧
     ret, frame = cap.read()
     if ret:
         height, width = frame.shape[:2]
@@ -114,7 +112,6 @@ def get_camera_info(camera_id):
     
     cap.release()
     
-    # 在Linux系统上添加设备路径
     if sys.platform.startswith('linux'):
         dev_path = f"/dev/video{camera_id}"
         if os.path.exists(dev_path):
@@ -122,70 +119,50 @@ def get_camera_info(camera_id):
     
     return info
 
+
 def capture_photo(camera_id=0, save_path=None, resolution=None, wait_time=1):
-    """
-    调用指定摄像头拍照
-    
-    Args:
-        camera_id: 摄像头ID（默认0）
-        save_path: 保存路径（None时自动生成到默认目录）
-        resolution: 分辨率设置，如"1920x1080"（None时使用默认）
-        wait_time: 等待摄像头预热的时间（秒）
-    
-    Returns:
-        (保存路径, 错误信息, 宽度, 高度)
-    """
-    # 初始化摄像头
+    """调用指定摄像头拍照"""
     cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
         return None, f"无法打开摄像头 #{camera_id}，请检查摄像头连接", None, None
     
-    # 如果指定了分辨率，尝试设置
     if resolution:
         try:
             width, height = map(int, resolution.lower().replace('x', ' ').split())
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         except:
-            pass  # 分辨率格式错误时忽略
+            pass
     
-    # 等待摄像头预热，让自动曝光等稳定下来
     time.sleep(wait_time)
     
-    # 丢弃前几帧，让摄像头适应光线
     for _ in range(5):
         cap.read()
     
-    # 拍照
     ret, frame = cap.read()
     cap.release()
     
     if not ret:
         return None, "拍照失败，无法获取图像帧", None, None
     
-    # 获取实际的分辨率
     actual_height, actual_width = frame.shape[:2]
     
-    # 确定保存路径
     if save_path is None:
-        # 如果没有指定路径，使用默认目录和自动生成的文件名
         ensure_camera_dir()
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         filename = f"camera_{camera_id}_{timestamp}.jpg"
         save_path = os.path.join(CAMERA_DIR, filename)
     else:
-        # 如果指定了路径，确保目录存在
         save_dir = os.path.dirname(save_path)
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
     
-    # 确保路径有扩展名
     if not os.path.splitext(save_path)[1]:
         save_path += '.jpg'
     
-    # 保存图片
     cv2.imwrite(save_path, frame)
     return save_path, None, actual_width, actual_height
+
 
 def format_camera_list(cameras):
     """格式化相机列表输出"""
@@ -204,6 +181,7 @@ def format_camera_list(cameras):
     
     return "\n".join(lines)
 
+
 def list_recent_photos(limit=10):
     """列出最近的摄像头照片"""
     ensure_camera_dir()
@@ -211,7 +189,6 @@ def list_recent_photos(limit=10):
     if not os.path.exists(CAMERA_DIR):
         return f"摄像头照片目录不存在: {CAMERA_DIR}"
     
-    # 获取所有图片文件
     photos = []
     for f in os.listdir(CAMERA_DIR):
         if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif')):
@@ -220,7 +197,6 @@ def list_recent_photos(limit=10):
             size = os.path.getsize(filepath)
             photos.append((mtime, f, size))
     
-    # 按修改时间排序（最新的在前）
     photos.sort(reverse=True)
     
     if not photos:
@@ -228,10 +204,8 @@ def list_recent_photos(limit=10):
     
     result = [f"📸 最近的摄像头照片 (共 {len(photos)} 个):"]
     for i, (mtime, fname, size) in enumerate(photos[:limit], 1):
-        # 格式化时间
         dt = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
         
-        # 格式化大小
         if size < 1024:
             size_str = f"{size}B"
         elif size < 1024 * 1024:
@@ -246,237 +220,152 @@ def list_recent_photos(limit=10):
     
     return "\n".join(result)
 
+
 def main():
-    """主函数 - 处理命令行参数并执行"""
-    parser = argparse.ArgumentParser(description='摄像头拍照工具')
+    parser = argparse.ArgumentParser(
+        description="摄像头拍照工具 - 获取相机设备列表、选择指定相机拍照、保存照片。",
+        epilog="""
+使用示例:
+  # 列出所有可用摄像头
+  camera --action list
+
+  # 查看摄像头详细信息
+  camera --action info --camera-id 0
+
+  # 拍照（自动生成文件名）
+  camera --action capture --camera-id 0
+
+  # 拍照并指定分辨率
+  camera --action capture --camera-id 0 --resolution "1920x1080"
+
+  # 拍照并自定义文件名
+  camera --action capture --camera-id 0 --filename "my_photo"
+
+  # 拍照并等待3秒预热
+  camera --action capture --camera-id 0 --wait-time 3
+
+  # 列出最近的照片
+  camera --action list-photos --limit 5
+
+照片保存位置:
+  ~/.aibox/camera/
+  自动命名格式: camera_{摄像头ID}_{YYYYMMDD_HHMMSS}.jpg
+
+需要安装:
+  pip install opencv-python
+        """
+    )
     
-    # 扩展工具必需的参数
-    parser.add_argument('--description', action='store_true', 
-                       help='返回工具描述')
-    parser.add_argument('--parameters', action='store_true', 
-                       help='返回工具参数定义（JSON格式）')
-    parser.add_argument('--execute', action='store_true', 
-                       help='执行工具')
-    parser.add_argument('--args', type=str, 
-                       help='执行参数（JSON格式）')
+    parser.add_argument("--action", "-a", required=True,
+        choices=["list", "info", "capture", "list-photos"],
+        help="操作类型")
+    
+    # 摄像头参数
+    parser.add_argument("--camera-id", "-c", type=int, default=0,
+        help="摄像头ID（默认: 0）")
+    
+    parser.add_argument("--resolution", "-r",
+        help="照片分辨率，格式: 宽度x高度（如 1920x1080）")
+    
+    parser.add_argument("--wait-time", "-w", type=float, default=1,
+        help="等待摄像头预热时间（秒，默认: 1）")
+    
+    parser.add_argument("--filename", "-f",
+        help="自定义文件名（不含路径，自动保存到默认目录）")
+    
+    parser.add_argument("--limit", "-l", type=int, default=10,
+        help="列出照片时的数量限制（默认: 10）")
     
     args = parser.parse_args()
     
-    # 处理 --description 参数
-    if args.description:
-        description = f"""摄像头拍照工具 - 获取相机设备列表、选择指定相机拍照、保存照片到指定位置
-
-功能:
-1. 列出所有可用的摄像头设备（使用list操作）
-2. 查看指定摄像头的详细信息（使用info操作）
-3. 使用指定摄像头拍照（使用capture操作）
-4. 照片自动保存在 {CAMERA_DIR} 目录
-5. 支持流式输出拍照进度
-6. 支持列出最近的摄像头照片（使用list_photos操作）
-
-需要安装: opencv-python
-
-----------------
-照片命名格式: camera_{{摄像头ID}}_{{时间戳}}.jpg
-时间戳格式: YYYYMMDD_HHMMSS
-"""
-        print(description)
-        return 0
-    
-    # 处理 --parameters 参数
-    if args.parameters:
-        parameters = {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "操作类型",
-                    "enum": ["list", "info", "capture", "list_photos"]
-                },
-                "camera_id": {
-                    "type": "integer",
-                    "description": "摄像头ID（默认0）",
-                    "default": 0
-                },
-                "resolution": {
-                    "type": "string",
-                    "description": "照片分辨率，格式：宽度x高度（如 1920x1080），不指定则使用摄像头默认"
-                },
-                "wait_time": {
-                    "type": "number",
-                    "description": "等待摄像头预热时间（秒，默认1秒）",
-                    "default": 1
-                },
-                "filename": {
-                    "type": "string",
-                    "description": "自定义文件名（可选，不指定则自动生成时间戳文件名）"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "列出照片时的数量限制（默认10）",
-                    "default": 10
-                },
-                "stream": {
-                    "type": "boolean",
-                    "description": "是否流式输出进度信息",
-                    "default": True
-                }
-            },
-            "required": ["action"]
-        }
-        print(json.dumps(parameters, ensure_ascii=False))
-        return 0
-    
-    # 处理 --execute 参数
-    if args.execute and args.args:
-        try:
-            kwargs = json.loads(args.args)
-        except json.JSONDecodeError as e:
-            print(f"❌ 参数解析错误: {e}")
-            return 1
-        
-        action = kwargs.get("action")
-        if not action:
-            print("❌ 错误：缺少必需参数 'action'")
-            return 1
-        
-        stream = kwargs.get("stream", True)
-        
-        # 流式输出处理
-        def output_line(msg):
-            if stream:
-                print(msg, flush=True)
-            else:
-                # 非流式模式，收集到最终结果
-                if not hasattr(output_line, 'lines'):
-                    output_line.lines = []
-                output_line.lines.append(msg)
-        
-        def get_final_output():
-            if not stream and hasattr(output_line, 'lines'):
-                return "\n".join(output_line.lines)
-            return ""
-        
-        try:
-            if action == "list":
-                # 列出所有摄像头
-                output_line("🔍 正在扫描摄像头设备...")
-                cameras = list_cameras(10)
-                result = format_camera_list(cameras)
-                output_line(result)
-                
-                # 添加使用建议
-                if cameras:
-                    output_line("\n💡 使用建议:")
-                    output_line(f"  要使用摄像头 #{cameras[0]['id']} 拍照，请执行 capture 操作")
-                    output_line("  要查看摄像头详细信息，请执行 info 操作")
-                
-            elif action == "list_photos":
-                # 列出最近的摄像头照片
-                limit = kwargs.get("limit", 10)
-                result = list_recent_photos(limit)
-                output_line(result)
-                
-            elif action == "info":
-                # 获取摄像头详细信息
-                camera_id = kwargs.get("camera_id", 0)
-                output_line(f"🔍 正在获取摄像头 #{camera_id} 的详细信息...")
-                
-                info = get_camera_info(camera_id)
-                if not info:
-                    output_line(f"❌ 无法打开摄像头 #{camera_id}，请检查设备是否存在")
-                else:
-                    output_line(f"📷 摄像头 #{camera_id} 详细信息:")
-                    if "device_path" in info:
-                        output_line(f"  设备路径: {info['device_path']}")
-                    output_line(f"  当前分辨率: {info.get('current_resolution', '未知')}")
-                    if "channels" in info:
-                        output_line(f"  色彩通道: {info['channels']}")
-                    
-                    if info["properties"]:
-                        output_line(f"\n  支持设置的属性:")
-                        for name, value in info["properties"].items():
-                            output_line(f"    {name}: {value}")
-                    
-                    output_line(f"\n💡 要拍照请执行 capture 操作")
-                
-            elif action == "capture":
-                # 拍照
-                camera_id = kwargs.get("camera_id", 0)
-                filename = kwargs.get("filename")
-                resolution = kwargs.get("resolution")
-                wait_time = kwargs.get("wait_time", 1)
-                
-                # 确保保存目录存在
-                ensure_camera_dir()
-                
-                # 确定保存路径
-                if filename:
-                    # 如果指定了文件名，使用指定文件名
-                    save_path = os.path.join(CAMERA_DIR, filename)
-                else:
-                    # 否则自动生成带时间戳的文件名
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    save_path = os.path.join(CAMERA_DIR, f"camera_{camera_id}_{timestamp}.jpg")
-                
-                output_line(f"📸 正在使用摄像头 #{camera_id} 拍照...")
-                if resolution:
-                    output_line(f"  请求分辨率: {resolution}")
-                output_line(f"  预热时间: {wait_time}秒")
-                output_line(f"  保存目录: {CAMERA_DIR}")
-                
-                # 执行拍照
-                image_path, error, width, height = capture_photo(
-                    camera_id=camera_id,
-                    save_path=save_path,
-                    resolution=resolution,
-                    wait_time=wait_time
-                )
-                
-                if error:
-                    output_line(f"❌ {error}")
-                else:
-                    output_line(f"✅ 拍照成功!")
-                    output_line(f"  📷 实际分辨率: {width}x{height}")
-                    output_line(f"  💾 保存路径: {image_path}")
-                    
-                    # 获取文件大小
-                    if os.path.exists(image_path):
-                        file_size = os.path.getsize(image_path)
-                        if file_size < 1024:
-                            size_str = f"{file_size}B"
-                        elif file_size < 1024 * 1024:
-                            size_str = f"{file_size/1024:.1f}KB"
-                        else:
-                            size_str = f"{file_size/1024/1024:.1f}MB"
-                        output_line(f"  📦 文件大小: {size_str}")
-                    
-                    # 显示目录中的照片总数
-                    photos = [f for f in os.listdir(CAMERA_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
-                    output_line(f"  📁 该目录共有 {len(photos)} 张照片")
-                
-            else:
-                output_line(f"❌ 未知操作: {action}")
-                return 1
+    # 执行操作
+    try:
+        if args.action == "list":
+            print("🔍 正在扫描摄像头设备...")
+            cameras = list_cameras(10)
+            print(format_camera_list(cameras))
             
-            # 如果是非流式模式，输出最终结果
-            if not stream:
-                print(get_final_output())
+            if cameras:
+                print(f"\n💡 使用建议:")
+                print(f"  要使用摄像头 #{cameras[0]['id']} 拍照，请执行:")
+                print(f"    camera --action capture --camera-id {cameras[0]['id']}")
+                print(f"  要查看摄像头详细信息，请执行:")
+                print(f"    camera --action info --camera-id {cameras[0]['id']}")
+        
+        elif args.action == "list-photos":
+            result = list_recent_photos(args.limit)
+            print(result)
+        
+        elif args.action == "info":
+            print(f"🔍 正在获取摄像头 #{args.camera_id} 的详细信息...")
             
-            return 0
+            info = get_camera_info(args.camera_id)
+            if not info:
+                print(f"❌ 无法打开摄像头 #{args.camera_id}，请检查设备是否存在")
+                sys.exit(1)
             
-        except Exception as e:
-            error_msg = f"❌ 执行错误: {str(e)}"
-            if stream:
-                print(error_msg, file=sys.stderr)
+            print(f"📷 摄像头 #{args.camera_id} 详细信息:")
+            if "device_path" in info:
+                print(f"  设备路径: {info['device_path']}")
+            print(f"  当前分辨率: {info.get('current_resolution', '未知')}")
+            if "channels" in info:
+                print(f"  色彩通道: {info['channels']}")
+            
+            if info["properties"]:
+                print(f"\n  支持设置的属性:")
+                for name, value in info["properties"].items():
+                    print(f"    {name}: {value}")
+            
+            print(f"\n💡 要拍照请执行:")
+            print(f"  camera --action capture --camera-id {args.camera_id}")
+        
+        elif args.action == "capture":
+            ensure_camera_dir()
+            
+            if args.filename:
+                save_path = os.path.join(CAMERA_DIR, args.filename)
             else:
-                print(error_msg)
-            return 1
-    
-    # 如果没有参数或参数错误，显示帮助
-    parser.print_help()
-    return 1
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                save_path = os.path.join(CAMERA_DIR, f"camera_{args.camera_id}_{timestamp}.jpg")
+            
+            print(f"📸 正在使用摄像头 #{args.camera_id} 拍照...")
+            if args.resolution:
+                print(f"  请求分辨率: {args.resolution}")
+            print(f"  预热时间: {args.wait_time}秒")
+            print(f"  保存目录: {CAMERA_DIR}")
+            
+            image_path, error, width, height = capture_photo(
+                camera_id=args.camera_id,
+                save_path=save_path,
+                resolution=args.resolution,
+                wait_time=args.wait_time
+            )
+            
+            if error:
+                print(f"❌ {error}")
+                sys.exit(1)
+            
+            print(f"✅ 拍照成功!")
+            print(f"  📷 实际分辨率: {width}x{height}")
+            print(f"  💾 保存路径: {image_path}")
+            
+            if os.path.exists(image_path):
+                file_size = os.path.getsize(image_path)
+                if file_size < 1024:
+                    size_str = f"{file_size}B"
+                elif file_size < 1024 * 1024:
+                    size_str = f"{file_size/1024:.1f}KB"
+                else:
+                    size_str = f"{file_size/1024/1024:.1f}MB"
+                print(f"  📦 文件大小: {size_str}")
+            
+            photos = [f for f in os.listdir(CAMERA_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+            print(f"  📁 该目录共有 {len(photos)} 张照片")
+        
+    except Exception as e:
+        print(f"❌ 执行错误: {str(e)}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
-"""
-扩展技能：人脸检测和识别工具
-用于检测图像中的人脸并保存裁剪后的人脸图像
-放置在 ~/.aibox/skills/face_detector.py
-"""
+"""人脸检测和识别工具 - 检测图像中的人脸并保存裁剪的人脸图像。"""
 
 import os
 import sys
-import json
 import argparse
 import cv2
-import face_recognition
 import numpy as np
 from datetime import datetime
-from typing import List, Optional
+
+try:
+    import face_recognition
+except ImportError:
+    print("❌ 缺少依赖库: face_recognition。请运行: pip install face_recognition")
+    sys.exit(1)
 
 
 class FaceDetector:
     """人脸检测和识别工具"""
     
     def __init__(self):
-        # 人脸图像保存目录
         self.faces_dir = os.path.expanduser("~/.aibox/faces")
-        # 已知人脸数据库目录
         self.known_faces_dir = os.path.expanduser("~/.aibox/known_faces")
         self._ensure_dirs()
         self.known_face_encodings = []
@@ -30,7 +27,6 @@ class FaceDetector:
         self._load_known_faces()
     
     def _ensure_dirs(self):
-        """确保目录存在"""
         os.makedirs(self.faces_dir, exist_ok=True)
         os.makedirs(self.known_faces_dir, exist_ok=True)
     
@@ -47,7 +43,6 @@ class FaceDetector:
                         image = face_recognition.load_image_file(filepath)
                         encodings = face_recognition.face_encodings(image)
                         if encodings:
-                            # 文件名作为人名（去掉扩展名）
                             name = os.path.splitext(filename)[0]
                             self.known_face_encodings.append(encodings[0])
                             self.known_face_names.append(name)
@@ -56,9 +51,7 @@ class FaceDetector:
     
     def detect_faces(self, image_path: str, save_cropped: bool = True, 
                      recognize: bool = True, tolerance: float = 0.6) -> str:
-        """
-        检测图像中的人脸并保存裁剪的人脸
-        """
+        """检测图像中的人脸并保存裁剪的人脸"""
         try:
             if not os.path.exists(image_path):
                 return f"❌ 错误：文件不存在 - {image_path}"
@@ -109,7 +102,6 @@ class FaceDetector:
                 if save_cropped:
                     image_array = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                     
-                    # 添加一点边距
                     margin = 20
                     top_crop = max(0, top - margin)
                     bottom_crop = min(image_array.shape[0], bottom + margin)
@@ -133,7 +125,6 @@ class FaceDetector:
             output = []
             output.append(f"✅ 检测到 {len(face_locations)} 个人脸")
             output.append(f"📁 人脸图像保存位置: {self.faces_dir}")
-            output.append(f"📁 已知人脸数据库: {self.known_faces_dir}")
             output.append("")
             
             for face in results:
@@ -161,7 +152,7 @@ class FaceDetector:
         except Exception as e:
             return f"❌ 人脸检测失败: {str(e)}"
     
-    def list_saved_faces(self, limit: int = 20) -> List[str]:
+    def list_saved_faces(self, limit: int = 20) -> str:
         """列出已保存的人脸图像"""
         try:
             files = []
@@ -171,11 +162,19 @@ class FaceDetector:
                         files.append(filename)
                         if len(files) >= limit:
                             break
-            return files
-        except Exception:
-            return []
+            
+            if files:
+                output = [f"📁 已保存的人脸图像 (最近 {len(files)} 张):"]
+                for f in files:
+                    output.append(f"  • {f}")
+                output.append(f"\n📂 保存位置: {self.faces_dir}")
+                return "\n".join(output)
+            else:
+                return "📭 尚未保存任何人脸图像"
+        except Exception as e:
+            return f"❌ 列出失败: {str(e)}"
     
-    def list_known_faces(self) -> List[str]:
+    def list_known_faces(self) -> str:
         """列出已知人脸库中的人脸"""
         try:
             faces = []
@@ -184,9 +183,17 @@ class FaceDetector:
                     if filename.endswith(('.jpg', '.jpeg', '.png')):
                         name = os.path.splitext(filename)[0]
                         faces.append(name)
-            return faces
-        except Exception:
-            return []
+            
+            if faces:
+                output = [f"👥 已知人脸库 (共 {len(faces)} 人):"]
+                for name in faces:
+                    output.append(f"  • {name}")
+                output.append(f"\n📂 数据库位置: {self.known_faces_dir}")
+                return "\n".join(output)
+            else:
+                return "📭 已知人脸库为空"
+        except Exception as e:
+            return f"❌ 列出失败: {str(e)}"
     
     def add_known_face(self, image_path: str, person_name: str) -> str:
         """添加已知人脸到数据库"""
@@ -203,18 +210,14 @@ class FaceDetector:
             if len(face_locations) > 1:
                 return f"⚠️ 检测到 {len(face_locations)} 个人脸，请使用单人脸图片"
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{person_name}.jpg"
-            filepath = os.path.join(self.known_faces_dir, filename)
+            filepath = os.path.join(self.known_faces_dir, f"{person_name}.jpg")
             
-            # 如果已存在同名文件，先删除
             if os.path.exists(filepath):
                 os.remove(filepath)
             
             image_array = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
             top, right, bottom, left = face_locations[0]
             
-            # 添加一点边距
             margin = 20
             top_crop = max(0, top - margin)
             bottom_crop = min(image_array.shape[0], bottom + margin)
@@ -224,7 +227,6 @@ class FaceDetector:
             face_crop = image_array[top_crop:bottom_crop, left_crop:right_crop]
             cv2.imwrite(filepath, face_crop)
             
-            # 重新加载已知人脸
             self._load_known_faces()
             
             return f"✅ 已添加已知人脸: {person_name}\n📁 保存位置: {filepath}"
@@ -238,7 +240,6 @@ class FaceDetector:
             filepath = os.path.join(self.known_faces_dir, f"{person_name}.jpg")
             
             if not os.path.exists(filepath):
-                # 尝试查找匹配的文件（不区分大小写）
                 for filename in os.listdir(self.known_faces_dir):
                     if filename.endswith(('.jpg', '.jpeg', '.png')):
                         name = os.path.splitext(filename)[0]
@@ -256,13 +257,12 @@ class FaceDetector:
         except Exception as e:
             return f"❌ 删除失败: {str(e)}"
     
-    def get_face_info(self, person_name: str) -> Optional[str]:
+    def get_face_info(self, person_name: str) -> str:
         """获取已知人脸信息"""
         try:
             filepath = os.path.join(self.known_faces_dir, f"{person_name}.jpg")
             
             if not os.path.exists(filepath):
-                # 尝试查找匹配的文件
                 for filename in os.listdir(self.known_faces_dir):
                     if filename.endswith(('.jpg', '.jpeg', '.png')):
                         name = os.path.splitext(filename)[0]
@@ -289,165 +289,110 @@ class FaceDetector:
 
 
 def main():
-    """主函数 - 处理命令行参数"""
-    parser = argparse.ArgumentParser(description='人脸检测和识别工具')
+    parser = argparse.ArgumentParser(
+        description="人脸检测和识别工具 - 检测图像中的人脸并保存裁剪的人脸图像。",
+        epilog="""
+使用示例:
+  # 检测人脸
+  face-detector --action detect --image-path photo.jpg
+
+  # 检测人脸（不保存裁剪）
+  face-detector --action detect --image-path photo.jpg --no-save
+
+  # 检测人脸（不进行识别）
+  face-detector --action detect --image-path photo.jpg --no-recognize
+
+  # 列出已保存的人脸图像
+  face-detector --action list-faces --limit 10
+
+  # 列出已知人脸库
+  face-detector --action list-known
+
+  # 添加已知人脸
+  face-detector --action add-known --image-path face.jpg --person-name "张三"
+
+  # 删除已知人脸
+  face-detector --action remove-known --person-name "张三"
+
+  # 查看人脸信息
+  face-detector --action get-info --person-name "张三"
+
+目录结构:
+  ~/.aibox/faces/       - 人脸图像保存位置
+  ~/.aibox/known_faces/ - 已知人脸数据库
+
+需要安装:
+  pip install face_recognition opencv-python
+        """
+    )
     
-    parser.add_argument('--description', action='store_true', help='返回工具描述')
-    parser.add_argument('--parameters', action='store_true', help='返回工具参数定义')
-    parser.add_argument('--execute', action='store_true', help='执行工具')
-    parser.add_argument('--args', type=str, default='{}', help='工具参数（JSON格式）')
+    parser.add_argument("--action", "-a", required=True,
+        choices=["detect", "list-faces", "list-known", "add-known", "remove-known", "get-info"],
+        help="操作类型")
+    
+    # 检测参数
+    parser.add_argument("--image-path", "-i", help="图片文件路径")
+    parser.add_argument("--no-save", action="store_true", help="不保存裁剪的人脸图像")
+    parser.add_argument("--no-recognize", action="store_true", help="不进行人脸识别")
+    parser.add_argument("--tolerance", "-t", type=float, default=0.6, help="识别容差（默认: 0.6）")
+    
+    # 列表参数
+    parser.add_argument("--limit", "-l", type=int, default=20, help="列出文件数量限制（默认: 20）")
+    
+    # 已知人脸参数
+    parser.add_argument("--person-name", "-n", help="人名标识")
     
     args = parser.parse_args()
     
-    # 返回描述信息
-    if args.description:
-        desc = """人脸检测和识别工具
-
-功能：
-- 检测图像中的人脸
-- 自动裁剪并保存人脸图像
-- 人脸识别（需要已知人脸库）
-- 添加/删除已知人脸到数据库
-- 列出已保存的人脸图像
-- 查看已知人脸信息
-
-目录结构：
-- 人脸图像保存位置: ~/.aibox/faces/
-- 已知人脸数据库: ~/.aibox/known_faces/
-
-支持的操作：
-- detect: 检测图像中的人脸并保存
-- list_faces: 列出已保存的人脸图像
-- list_known: 列出已知人脸库
-- add_known: 添加已知人脸到数据库
-- remove_known: 从数据库中删除已知人脸
-- get_info: 获取已知人脸信息"""
-        print(desc)
-        sys.exit(0)
+    detector = FaceDetector()
     
-    # 返回参数定义
-    if args.parameters:
-        parameters = {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["detect", "list_faces", "list_known", "add_known", "remove_known", "get_info"],
-                    "description": "操作类型"
-                },
-                "image_path": {
-                    "type": "string",
-                    "description": "图片文件路径（用于detect和add_known操作）"
-                },
-                "person_name": {
-                    "type": "string",
-                    "description": "人名标识（用于add_known、remove_known、get_info操作）"
-                },
-                "save_cropped": {
-                    "type": "boolean",
-                    "description": "是否保存裁剪的人脸图像",
-                    "default": True
-                },
-                "recognize": {
-                    "type": "boolean",
-                    "description": "是否进行人脸识别",
-                    "default": True
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "列出文件数量限制",
-                    "default": 20
-                }
-            },
-            "required": ["action"]
-        }
-        print(json.dumps(parameters, ensure_ascii=False, separators=(',', ':')))
-        sys.exit(0)
-    
-    # 执行工具
-    if args.execute:
-        try:
-            params = json.loads(args.args) if args.args else {}
-            action = params.get("action", "detect")
-            detector = FaceDetector()
-            
-            if action == "detect":
-                image_path = params.get("image_path")
-                if not image_path:
-                    print("❌ 错误：需要提供 image_path 参数")
-                    sys.exit(1)
-                
-                save_cropped = params.get("save_cropped", True)
-                recognize = params.get("recognize", True)
-                
-                result = detector.detect_faces(image_path, save_cropped, recognize)
-                print(result)
-                
-            elif action == "list_faces":
-                limit = params.get("limit", 20)
-                files = detector.list_saved_faces(limit)
-                if files:
-                    print(f"📁 已保存的人脸图像 (最近 {len(files)} 张):")
-                    for f in files:
-                        print(f"  • {f}")
-                    print(f"\n📂 保存位置: {detector.faces_dir}")
-                else:
-                    print("📭 尚未保存任何人脸图像")
-                    
-            elif action == "list_known":
-                faces = detector.list_known_faces()
-                if faces:
-                    print(f"👥 已知人脸库 (共 {len(faces)} 人):")
-                    for name in faces:
-                        print(f"  • {name}")
-                    print(f"\n📂 数据库位置: {detector.known_faces_dir}")
-                else:
-                    print("📭 已知人脸库为空")
-                    
-            elif action == "add_known":
-                image_path = params.get("image_path")
-                person_name = params.get("person_name")
-                
-                if not image_path or not person_name:
-                    print("❌ 错误：需要提供 image_path 和 person_name 参数")
-                    sys.exit(1)
-                
-                result = detector.add_known_face(image_path, person_name)
-                print(result)
-                
-            elif action == "remove_known":
-                person_name = params.get("person_name")
-                
-                if not person_name:
-                    print("❌ 错误：需要提供 person_name 参数")
-                    sys.exit(1)
-                
-                result = detector.remove_known_face(person_name)
-                print(result)
-                
-            elif action == "get_info":
-                person_name = params.get("person_name")
-                
-                if not person_name:
-                    print("❌ 错误：需要提供 person_name 参数")
-                    sys.exit(1)
-                
-                result = detector.get_face_info(person_name)
-                print(result)
-                
-            else:
-                print(f"❌ 未知操作: {action}")
+    try:
+        if args.action == "detect":
+            if not args.image_path:
+                print("❌ 需要提供 --image-path 参数")
                 sys.exit(1)
             
-        except json.JSONDecodeError as e:
-            print(f"❌ 参数解析错误: {e}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"❌ 执行错误: {e}")
-            sys.exit(1)
-        sys.exit(0)
-    
-    parser.print_help()
+            result = detector.detect_faces(
+                image_path=args.image_path,
+                save_cropped=not args.no_save,
+                recognize=not args.no_recognize,
+                tolerance=args.tolerance
+            )
+            print(result)
+        
+        elif args.action == "list-faces":
+            print(detector.list_saved_faces(args.limit))
+        
+        elif args.action == "list-known":
+            print(detector.list_known_faces())
+        
+        elif args.action == "add-known":
+            if not args.image_path or not args.person_name:
+                print("❌ 需要提供 --image-path 和 --person-name 参数")
+                sys.exit(1)
+            
+            result = detector.add_known_face(args.image_path, args.person_name)
+            print(result)
+        
+        elif args.action == "remove-known":
+            if not args.person_name:
+                print("❌ 需要提供 --person-name 参数")
+                sys.exit(1)
+            
+            result = detector.remove_known_face(args.person_name)
+            print(result)
+        
+        elif args.action == "get-info":
+            if not args.person_name:
+                print("❌ 需要提供 --person-name 参数")
+                sys.exit(1)
+            
+            result = detector.get_face_info(args.person_name)
+            print(result)
+        
+    except Exception as e:
+        print(f"❌ 执行错误: {str(e)}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
