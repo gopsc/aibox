@@ -1131,7 +1131,7 @@ class ConfigManager:
                 "compress_enabled": True,
                 "compress_message_threshold": 200,
                 "compress_token_threshold": 120000,
-                "compress_ratio": 0.4,
+                "compress_ratio": 0.2,
                 "compress_keep_recent": 8
             },
             "memo": {
