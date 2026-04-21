@@ -1129,7 +1129,7 @@ class ConfigManager:
                 "preserve_system_prompts": True,
                 # 对话压缩配置
                 "compress_enabled": True,
-                "compress_message_threshold": 100,
+                "compress_message_threshold": 200,
                 "compress_token_threshold": 120000,
                 "compress_ratio": 0.4,
                 "compress_keep_recent": 8
