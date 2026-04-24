@@ -6505,8 +6505,6 @@ class DeepSeekChat:
         # 默认情况下，如果记忆库存在，搜索一下也无妨
         return True
     
-    # 修改 think_and_respond 方法，在 messages 中保留 reasoning_content
-    
     def think_and_respond(self, input_text: str, output_callback: Callable = None) -> Optional[str]:
         """思考并回应 - 支持实时流式输出，支持思考模式"""
         if not self.conversation_active:
@@ -6542,37 +6540,37 @@ class DeepSeekChat:
         
         # 前置提示词
         pre_prompt = """【系统指令】
-            在回答用户问题之前，请务必先执行以下步骤：
-            1. 使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆
-            2. 如果搜索结果中有相关信息，请在回答中适当引用
-            3. 这能帮助你保持对话的连贯性，避免重复询问同样的问题
-    
-            【重要】
-            - 每次回答前都必须执行记忆搜索
-            - 如果记忆库中没有相关信息，正常回答即可
-            - 对话结束时，必须使用 `save_memory_and_end_conversation` 工具保存本次对话的重要信息并更新智能体状态
-            - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
-            - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
-            - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
-    
-            现在请处理用户的输入："""
-    
+                在回答用户问题之前，请务必先执行以下步骤：
+                1. 使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆
+                2. 如果搜索结果中有相关信息，请在回答中适当引用
+                3. 这能帮助你保持对话的连贯性，避免重复询问同样的问题
+        
+                【重要】
+                - 每次回答前都必须执行记忆搜索
+                - 如果记忆库中没有相关信息，正常回答即可
+                - 对话结束时，必须使用 `save_memory_and_end_conversation` 工具保存本次对话的重要信息并更新智能体状态
+                - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
+                - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
+                - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
+        
+                现在请处理用户的输入："""
+        
         # 后置提示词
         post_prompt = """
-    
-            【注意】
-            当本次对话的话题讨论完成时，请使用 `save_memory_and_end_conversation` 工具结束对话并保存重要信息到记忆库，同时更新你的状态到 100_STATUS.md。
-    
-            【自我认知更新】
-            在对话过程中，如果你发现：
-            - 自己的角色定位需要调整
-            - 性格特点需要改变
-            - 能力边界需要重新定义
-            - 行为准则需要优化
-            请使用 `update_soul` 工具更新 99_SOUL.md 文件，这有助于你更好地理解自己并为用户提供更精准的服务。"""
-    
+        
+                【注意】
+                当本次对话的话题讨论完成时，请使用 `save_memory_and_end_conversation` 工具结束对话并保存重要信息到记忆库，同时更新你的状态到 100_STATUS.md。
+        
+                【自我认知更新】
+                在对话过程中，如果你发现：
+                - 自己的角色定位需要调整
+                - 性格特点需要改变
+                - 能力边界需要重新定义
+                - 行为准则需要优化
+                请使用 `update_soul` 工具更新 99_SOUL.md 文件，这有助于你更好地理解自己并为用户提供更精准的服务。"""
+        
         enhanced_input = pre_prompt + "\n\n" + input_text + post_prompt
-    
+        
         self._add_message("user", enhanced_input)
         
         if self.history_manager:
@@ -6591,18 +6589,18 @@ class DeepSeekChat:
             if msg["role"] == "system":
                 enhanced_messages.append(msg)
         
-        # 添加非系统消息
+        # 添加非系统消息，但确保消息结构正确
         for msg in self.messages:
             if msg["role"] != "system":
-                # 【关键修改】完整保留 assistant 消息的所有字段，包括 reasoning_content
                 if msg["role"] == "assistant":
                     assistant_msg = {"role": "assistant"}
-                    if "content" in msg:
+                    if "content" in msg and msg["content"]:
                         assistant_msg["content"] = msg["content"]
                     if "reasoning_content" in msg:
                         assistant_msg["reasoning_content"] = msg["reasoning_content"]
-                    if "tool_calls" in msg:
+                    if "tool_calls" in msg and msg["tool_calls"]:
                         assistant_msg["tool_calls"] = msg["tool_calls"]
+                        assistant_msg["content"] = None
                     enhanced_messages.append(assistant_msg)
                 else:
                     enhanced_messages.append(msg)
@@ -6729,7 +6727,7 @@ class DeepSeekChat:
                 if output_callback:
                     output_callback("line", i18n.get('calling_tools') + "\n")
                 
-                # 【关键】添加助手消息时，同时保留 reasoning_content
+                # 【关键修复1】先添加助手消息，包含 tool_calls
                 assistant_msg = {
                     "role": "assistant",
                     "content": full_response if full_response else None
@@ -6740,32 +6738,44 @@ class DeepSeekChat:
                     assistant_msg["tool_calls"] = tool_calls_buffer
                     assistant_msg["content"] = None
                 
-                self._add_assistant_message_with_reasoning(full_response, full_reasoning, tool_calls_buffer)
+                # 添加助手消息到消息列表
+                self.messages.append(assistant_msg)
                 
                 if self.history_manager:
                     self.history_manager.add_message("assistant", full_response, self.name)
                 
-                # 添加助手消息到消息列表
-                self.messages.append(assistant_msg)
-                
+                # 【关键修复2】执行工具调用并获取结果
                 tool_responses = self._handle_tool_calls(tool_calls_buffer, output_callback)
                 
+                # 【关键修复3】添加所有 tool 响应消息
+                if tool_responses:
+                    for tool_response in tool_responses:
+                        self.messages.append(tool_response)
+                
+                # 检查对话是否应该结束
                 if not self.conversation_active:
                     self.logger.info("对话已结束，停止响应")
                     if output_callback:
                         output_callback("dialogue_ended", i18n.get('dialogue_ended'))
                     return None
                 
-                if tool_responses:
-                    self.messages.extend(tool_responses)
-                
                 if output_callback:
                     output_callback("line", i18n.get('analyzing_tool_results') + "\n")
-                return self.think_and_respond("（请基于工具结果继续回答）", output_callback)
+                
+                # 【关键修复4】递归调用，让AI基于工具结果继续回答
+                # 使用一个新的输入提示，避免重复
+                return self.think_and_respond("请基于以上工具执行结果继续回答用户的问题。", output_callback)
             
             elif full_response:
-                # 【关键】正常添加助手消息，包含 reasoning_content
-                self._add_assistant_message_with_reasoning(full_response, full_reasoning)
+                # 正常添加助手消息，包含 reasoning_content
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": full_response
+                }
+                if full_reasoning:
+                    assistant_msg["reasoning_content"] = full_reasoning
+                self.messages.append(assistant_msg)
+                
                 if self.history_manager:
                     self.history_manager.add_message("assistant", full_response, self.name)
                 
