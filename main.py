@@ -6229,7 +6229,20 @@ class DeepSeekChat:
                 default_prompt = "你是一个智能AI助手。"
                 self._add_message("system", default_prompt)
                 self.logger.info("使用默认系统提示词")
-    
+
+    # 在 DeepSeekChat 类的 __init__ 方法后添加
+    def _add_assistant_message_with_reasoning(self, content: str, reasoning_content: str = None, tool_calls: List = None):
+        """添加助手消息，包含 reasoning_content"""
+        msg = {"role": "assistant"}
+        if content:
+            msg["content"] = content
+        if reasoning_content:
+            msg["reasoning_content"] = reasoning_content
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+            msg["content"] = None
+        self.messages.append(msg)
+
     def _register_tools(self, exit_callback: Callable = None, command_executor: CommandExecutor = None):
         # 内置工具列表
         builtin_tools = [
@@ -6492,8 +6505,10 @@ class DeepSeekChat:
         # 默认情况下，如果记忆库存在，搜索一下也无妨
         return True
     
+    # 修改 think_and_respond 方法，在 messages 中保留 reasoning_content
+    
     def think_and_respond(self, input_text: str, output_callback: Callable = None) -> Optional[str]:
-        """思考并回应 - 支持实时流式输出"""
+        """思考并回应 - 支持实时流式输出，支持思考模式"""
         if not self.conversation_active:
             self.logger.info("对话已结束，重置状态")
             self.conversation_active = True
@@ -6504,37 +6519,34 @@ class DeepSeekChat:
                 self.messages = []
             self.logger.info("对话状态已重置")
         
-        # 【关键修改】在添加用户消息之前进行压缩检查（输出信息到命令行）
-        should_compress, reason = self.compressor.should_compress(self.messages)
-        if should_compress:
-            self.logger.debug(f"压缩检查触发: {reason}")
-            
-            original_count = len(self.messages)
-            original_tokens = self.compressor.estimate_tokens(self.messages)
-            
-            print(f"\n📦 {i18n.get('conversation_compress')}...")
-            print(f"   触发原因: {reason}")
-            
-            # 压缩对话（会保护最近的消息）
-            self.messages = self.compressor.compress_conversation(self.messages)
-            
-            compressed_count = len(self.messages)
-            compressed_tokens = self.compressor.estimate_tokens(self.messages)
-            
-            # 压缩信息已经在 compress_conversation 中输出，这里不需要重复
-            # 但可以保留详细日志
-            self.logger.debug(i18n.get('conversation_compressed', original_count, compressed_count))
-            self.logger.debug(f"Token数: {original_tokens} -> {compressed_tokens}")
+        # 压缩检查
+        if constants.COMPRESS_ENABLED:
+            should_compress, reason = self.compressor.should_compress(self.messages)
+            if should_compress:
+                self.logger.debug(f"压缩检查触发: {reason}")
+                original_count = len(self.messages)
+                original_tokens = self.compressor.estimate_tokens(self.messages)
+                
+                print(f"\n📦 {i18n.get('conversation_compress')}...")
+                print(f"   触发原因: {reason}")
+                
+                self.messages = self.compressor.compress_conversation(self.messages)
+                
+                compressed_count = len(self.messages)
+                compressed_tokens = self.compressor.estimate_tokens(self.messages)
+                
+                self.logger.debug(i18n.get('conversation_compressed', original_count, compressed_count))
+                self.logger.debug(f"Token数: {original_tokens} -> {compressed_tokens}")
         
         self.stats["api_calls"] += 1
         
-        # 前置提示词：告诉AI先搜索记忆
+        # 前置提示词
         pre_prompt = """【系统指令】
             在回答用户问题之前，请务必先执行以下步骤：
             1. 使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆
             2. 如果搜索结果中有相关信息，请在回答中适当引用
             3. 这能帮助你保持对话的连贯性，避免重复询问同样的问题
-
+    
             【重要】
             - 每次回答前都必须执行记忆搜索
             - 如果记忆库中没有相关信息，正常回答即可
@@ -6542,15 +6554,15 @@ class DeepSeekChat:
             - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
             - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
             - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
-
+    
             现在请处理用户的输入："""
-
-        # 后置提示词：提醒AI在结束时保存记忆和状态
+    
+        # 后置提示词
         post_prompt = """
-
+    
             【注意】
             当本次对话的话题讨论完成时，请使用 `save_memory_and_end_conversation` 工具结束对话并保存重要信息到记忆库，同时更新你的状态到 100_STATUS.md。
-
+    
             【自我认知更新】
             在对话过程中，如果你发现：
             - 自己的角色定位需要调整
@@ -6558,10 +6570,9 @@ class DeepSeekChat:
             - 能力边界需要重新定义
             - 行为准则需要优化
             请使用 `update_soul` 工具更新 99_SOUL.md 文件，这有助于你更好地理解自己并为用户提供更精准的服务。"""
-
-        # 拼接后的用户输入
+    
         enhanced_input = pre_prompt + "\n\n" + input_text + post_prompt
-
+    
         self._add_message("user", enhanced_input)
         
         if self.history_manager:
@@ -6572,7 +6583,7 @@ class DeepSeekChat:
             "Content-Type": "application/json"
         }
         
-        # 如果找到相关记忆，可以添加到上下文中
+        # 构建消息列表，确保包含 reasoning_content
         enhanced_messages = []
         
         # 添加所有系统消息
@@ -6583,14 +6594,30 @@ class DeepSeekChat:
         # 添加非系统消息
         for msg in self.messages:
             if msg["role"] != "system":
-                enhanced_messages.append(msg)
+                # 【关键修改】完整保留 assistant 消息的所有字段，包括 reasoning_content
+                if msg["role"] == "assistant":
+                    assistant_msg = {"role": "assistant"}
+                    if "content" in msg:
+                        assistant_msg["content"] = msg["content"]
+                    if "reasoning_content" in msg:
+                        assistant_msg["reasoning_content"] = msg["reasoning_content"]
+                    if "tool_calls" in msg:
+                        assistant_msg["tool_calls"] = msg["tool_calls"]
+                    enhanced_messages.append(assistant_msg)
+                else:
+                    enhanced_messages.append(msg)
         
         payload = {
             "model": constants.DEEPSEEK_MODEL,
             "messages": enhanced_messages,
             "temperature": constants.DEFAULT_TEMPERATURE,
             "max_tokens": constants.DEFAULT_MAX_TOKENS,
-            "stream": True  # 始终启用流式
+            "stream": True
+        }
+        
+        # 可选：添加 thinking 模式配置（如果有）
+        payload["thinking"] = {
+            "type": "enabled"
         }
         
         tools = self.tool_registry.get_tools_schemas()
@@ -6604,14 +6631,14 @@ class DeepSeekChat:
             output_callback("line", i18n.get('assistant_prefix'))
         
         full_response = ""
+        full_reasoning = ""  # 存储思考内容
         tool_calls_buffer = []
         current_tool_calls = {}
         
-        # 添加缓冲区来累积字符，避免每个字符都发送
         chunk_buffer = ""
         last_send_time = time.time()
-        MIN_CHUNK_SIZE = 5  # 最小发送大小
-        MAX_CHUNK_DELAY = 0.1  # 最大延迟（秒）
+        MIN_CHUNK_SIZE = 5
+        MAX_CHUNK_DELAY = 0.1
         
         try:
             response = requests.post(
@@ -6628,14 +6655,12 @@ class DeepSeekChat:
                     output_callback("error", error_msg)
                 response.raise_for_status()
             
-            # 处理流式响应 - 实时调用回调
             for line in response.iter_lines():
                 if line:
                     line = line.decode('utf-8')
                     if line.startswith('data: '):
-                        data = line[6:]  # 去掉 'data: ' 前缀
+                        data = line[6:]
                         if data == '[DONE]':
-                            # 发送缓冲区中剩余的内容
                             if chunk_buffer and output_callback:
                                 output_callback("chunk", chunk_buffer)
                                 chunk_buffer = ""
@@ -6651,20 +6676,26 @@ class DeepSeekChat:
                             
                             delta = choices[0].get('delta', {})
                             
-                            # 处理内容 - 批量发送以提高效率
+                            # 【关键】处理 reasoning_content（思考内容）
+                            if 'reasoning_content' in delta and delta['reasoning_content']:
+                                reasoning = delta['reasoning_content']
+                                full_reasoning += reasoning
+                                # 可选：将思考内容也发送给前端（可以单独处理）
+                                if output_callback and self.debug_level >= 3:
+                                    output_callback("reasoning", reasoning)
+                            
+                            # 处理正常内容
                             if 'content' in delta and delta['content']:
                                 content = delta['content']
                                 chunk_buffer += content
                                 full_response += content
                                 
-                                # 判断是否需要发送缓冲区
-                                current_time = time.time()
                                 if (len(chunk_buffer) >= MIN_CHUNK_SIZE or 
-                                    current_time - last_send_time >= MAX_CHUNK_DELAY):
+                                    time.time() - last_send_time >= MAX_CHUNK_DELAY):
                                     if output_callback:
                                         output_callback("chunk", chunk_buffer)
                                     chunk_buffer = ""
-                                    last_send_time = current_time
+                                    last_send_time = time.time()
                             
                             # 处理工具调用
                             if 'tool_calls' in delta:
@@ -6687,42 +6718,40 @@ class DeepSeekChat:
                                             current_tool_calls[index]['function']['name'] = tc['function']['name']
                                         if 'arguments' in tc['function']:
                                             current_tool_calls[index]['function']['arguments'] += tc['function']['arguments']
-                            
+                        
                         except json.JSONDecodeError as e:
                             self.logger.error(f"JSON解析错误: {e}, 数据: {data}")
                             continue
             
-            # 处理收集到的工具调用
+            # 处理工具调用
             if current_tool_calls:
                 tool_calls_buffer = list(current_tool_calls.values())
                 if output_callback:
                     output_callback("line", i18n.get('calling_tools') + "\n")
                 
-                # 添加助手消息
-                assistant_msg_content = full_response if full_response else None
-                if assistant_msg_content:
-                    self._add_message("assistant", assistant_msg_content)
-                    if self.history_manager:
-                        self.history_manager.add_message("assistant", assistant_msg_content, self.name)
-                else:
-                    # 如果没有内容，也需要记录空消息
-                    self._add_message("assistant", "")
-                    if self.history_manager:
-                        self.history_manager.add_message("assistant", "", self.name)
-                
-                # 添加工具调用消息
+                # 【关键】添加助手消息时，同时保留 reasoning_content
                 assistant_msg = {
                     "role": "assistant",
-                    "content": None,
-                    "tool_calls": tool_calls_buffer
+                    "content": full_response if full_response else None
                 }
+                if full_reasoning:
+                    assistant_msg["reasoning_content"] = full_reasoning
+                if tool_calls_buffer:
+                    assistant_msg["tool_calls"] = tool_calls_buffer
+                    assistant_msg["content"] = None
+                
+                self._add_assistant_message_with_reasoning(full_response, full_reasoning, tool_calls_buffer)
+                
+                if self.history_manager:
+                    self.history_manager.add_message("assistant", full_response, self.name)
+                
+                # 添加助手消息到消息列表
                 self.messages.append(assistant_msg)
                 
                 tool_responses = self._handle_tool_calls(tool_calls_buffer, output_callback)
                 
                 if not self.conversation_active:
                     self.logger.info("对话已结束，停止响应")
-                    # 【修复】发送对话结束信号
                     if output_callback:
                         output_callback("dialogue_ended", i18n.get('dialogue_ended'))
                     return None
@@ -6735,11 +6764,11 @@ class DeepSeekChat:
                 return self.think_and_respond("（请基于工具结果继续回答）", output_callback)
             
             elif full_response:
-                self._add_message("assistant", full_response)
+                # 【关键】正常添加助手消息，包含 reasoning_content
+                self._add_assistant_message_with_reasoning(full_response, full_reasoning)
                 if self.history_manager:
                     self.history_manager.add_message("assistant", full_response, self.name)
                 
-                # 发送完成消息
                 if output_callback:
                     output_callback("complete", full_response)
             
@@ -6763,6 +6792,19 @@ class DeepSeekChat:
                 output_callback("error", error_msg)
             self.stats["errors"].append(str(e))
             return error_msg
+    
+    
+    def _add_assistant_message_with_reasoning(self, content: str, reasoning_content: str = None, tool_calls: List = None):
+        """添加助手消息，包含 reasoning_content"""
+        msg = {"role": "assistant"}
+        if content:
+            msg["content"] = content
+        if reasoning_content:
+            msg["reasoning_content"] = reasoning_content
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+            msg["content"] = None
+        self.messages.append(msg)
 
     def reset_conversation(self, reload_prompts: bool = True):
         """
