@@ -7,11 +7,6 @@ import argparse
 from pathlib import Path
 import time
 
-try:
-    import cv2
-except ImportError:
-    print("❌ 缺少依赖库: opencv-python。请运行: pip install opencv-python")
-    sys.exit(1)
 
 # 定义默认的截图保存目录
 CAMERA_DIR = os.path.expanduser("~/.aibox/camera")
@@ -120,7 +115,7 @@ def get_camera_info(camera_id):
     return info
 
 
-def capture_photo(camera_id=0, save_path=None, resolution=None, wait_time=1):
+def capture_photo(camera_id=0, save_path=None, resolution=None, wait_time=1, exposure=None):
     """调用指定摄像头拍照"""
     cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
@@ -133,6 +128,12 @@ def capture_photo(camera_id=0, save_path=None, resolution=None, wait_time=1):
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         except:
             pass
+    
+    # 如果指定了曝光值，关闭自动曝光并设置手动曝光
+    if exposure is not None:
+        # 0.25 = 手动模式（部分后端用 1），3 = 自动模式
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+        cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
     
     time.sleep(wait_time)
     
@@ -244,6 +245,12 @@ def main():
   # 拍照并等待3秒预热
   camera --action capture --camera-id 0 --wait-time 3
 
+  # 手动降低曝光（数值越低越暗，-7 比 -5 更暗）
+  camera --action capture --camera-id 0 --exposure -7
+
+  # 调整曝光至较亮
+  camera --action capture --camera-id 0 --exposure -4
+
   # 列出最近的照片
   camera --action list-photos --limit 5
 
@@ -270,6 +277,9 @@ def main():
     parser.add_argument("--wait-time", "-w", type=float, default=1,
         help="等待摄像头预热时间（秒，默认: 1）")
     
+    parser.add_argument("--exposure", "-e", type=float,
+        help="曝光值（越低画面越暗。设置后自动关闭自动曝光，值范围取决于摄像头驱动，通常 -4 到 -7 为常见范围）")
+    
     parser.add_argument("--filename", "-f",
         help="自定义文件名（不含路径，自动保存到默认目录）")
     
@@ -277,6 +287,14 @@ def main():
         help="列出照片时的数量限制（默认: 10）")
     
     args = parser.parse_args()
+    # 延迟导入 cv2，确保 --help 不受依赖缺失影响
+    global cv2
+    try:
+        import cv2
+    except ImportError:
+        print("❌ 缺少依赖库: opencv-python。请运行: pip install opencv-python")
+        sys.exit(1)
+
     
     # 执行操作
     try:
@@ -332,13 +350,16 @@ def main():
             if args.resolution:
                 print(f"  请求分辨率: {args.resolution}")
             print(f"  预热时间: {args.wait_time}秒")
+            if args.exposure is not None:
+                print(f"  曝光值: {args.exposure}（手动模式，自动曝光已关闭）")
             print(f"  保存目录: {CAMERA_DIR}")
             
             image_path, error, width, height = capture_photo(
                 camera_id=args.camera_id,
                 save_path=save_path,
                 resolution=args.resolution,
-                wait_time=args.wait_time
+                wait_time=args.wait_time,
+                exposure=args.exposure
             )
             
             if error:
