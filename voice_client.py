@@ -17,8 +17,6 @@ from colorama import init, Fore, Style as ColoramaStyle
 init(autoreset=True)
 
 warnings.filterwarnings('ignore')
-os.environ['ALSA_CONFIG_PATH'] = '/dev/null'
-os.environ['JACK_NO_START_SERVER'] = '1'
 
 try:
     import speech_recognition as sr
@@ -45,29 +43,73 @@ class Colors:
 
 class TextToSpeech:
     def __init__(self):
-        self.engine = pyttsx3.init()
-        self.engine.setProperty('rate', 150)
-        voices = self.engine.getProperty('voices')
-        for voice in voices:
-            try:
-                if hasattr(voice, 'language'):
-                    lang_attr = voice.language
-                elif hasattr(voice, 'languages'):
-                    lang_attr = voice.languages[0] if voice.languages else ''
-                else:
+        self.engine = None
+        self.available = False
+        old_stderr = None
+        try:
+            old_stderr = os.dup(2)
+            null_fd = os.open('/dev/null', os.O_WRONLY)
+            os.dup2(null_fd, 2)
+            os.close(null_fd)
+            
+            self.engine = pyttsx3.init()
+            self.engine.setProperty('rate', 150)
+            voices = self.engine.getProperty('voices')
+            
+            chinese_voice = None
+            for voice in voices:
+                try:
+                    voice_name = str(voice.name).lower() if hasattr(voice, 'name') else ''
+                    lang_attr = ''
+                    if hasattr(voice, 'language'):
+                        lang_attr = str(voice.language).lower()
+                    elif hasattr(voice, 'languages'):
+                        lang_attr = str(voice.languages[0]).lower() if voice.languages else ''
+                    
+                    if 'chinese' in voice_name or 'zh' in lang_attr or 'mandarin' in voice_name:
+                        if 'mandarin' in voice_name and 'pinyin' in voice_name:
+                            chinese_voice = voice
+                            break
+                        elif chinese_voice is None:
+                            chinese_voice = voice
+                except Exception:
                     continue
-                if 'zh' in str(lang_attr) or 'Chinese' in str(lang_attr):
-                    self.engine.setProperty('voice', voice.id)
-                    break
+            
+            if chinese_voice:
+                self.engine.setProperty('voice', chinese_voice.id)
+                print(f"{Colors.INFO}🔊 已选择语音: {chinese_voice.name}{Colors.RESET}")
+            
+            try:
+                self.engine.say("测试")
+                self.engine.runAndWait()
+                self.available = True
             except Exception:
-                continue
+                self.available = False
+            
+        except Exception:
+            self.available = False
+        finally:
+            if old_stderr is not None:
+                os.dup2(old_stderr, 2)
+                os.close(old_stderr)
     
     def speak(self, text: str):
+        if not self.available or not self.engine:
+            return
+        old_stderr = None
         try:
+            old_stderr = os.dup(2)
+            null_fd = os.open('/dev/null', os.O_WRONLY)
+            os.dup2(null_fd, 2)
+            os.close(null_fd)
             self.engine.say(text)
             self.engine.runAndWait()
-        except Exception as e:
-            print(f"{Colors.ERROR}❌ 语音输出失败: {e}{Colors.RESET}")
+        except Exception:
+            pass
+        finally:
+            if old_stderr is not None:
+                os.dup2(old_stderr, 2)
+                os.close(old_stderr)
 
 class StreamingMessage:
     def __init__(self):
@@ -189,18 +231,21 @@ class WebSocketClient:
             error = data.get('error', '未知错误')
             
             print(f"{Colors.ERROR}❌ [任务 {task_id}] {task_title}: {error}{Colors.RESET}")
-            tts.speak(f"任务 {task_id} 出错了，错误是 {error}")
+            if tts:
+                tts.speak(f"任务 {task_id} 出错了，错误是 {error}")
             
             if execution_id:
                 await self.handle_stream_complete('task', tts, execution_id)
         
         elif msg_type == 'error':
             print(f"{Colors.ERROR}❌ {content}{Colors.RESET}")
-            tts.speak(f"错误，{content}")
+            if tts:
+                tts.speak(f"错误，{content}")
         
         elif msg_type == 'info':
             print(f"{Colors.INFO}ℹ️  {content}{Colors.RESET}")
-            tts.speak(content)
+            if tts:
+                tts.speak(content)
         
         elif msg_type == 'command_result':
             print(f"{Colors.SYSTEM}📋 {content}{Colors.RESET}")
@@ -210,7 +255,8 @@ class WebSocketClient:
         
         elif msg_type == 'notification':
             print(f"{Colors.INFO}🔔 {content}{Colors.RESET}")
-            tts.speak(content)
+            if tts:
+                tts.speak(content)
         
         else:
             if content:
@@ -247,7 +293,7 @@ class WebSocketClient:
         if msg_type == 'chat':
             stream = self.streaming_messages['chat']
             print()
-            if tts and stream.content:
+            if tts and getattr(tts, 'available', True) and stream.content:
                 tts.speak(stream.content)
             stream.clear()
         
@@ -258,7 +304,8 @@ class WebSocketClient:
     
     async def handle_dialogue_ended(self, tts: TextToSpeech):
         print(f"\n{Colors.SYSTEM}✅ 对话已结束，可以开始新对话{Colors.RESET}")
-        tts.speak("对话已结束")
+        if tts:
+            tts.speak("对话已结束")
         self.streaming_messages['chat'].clear()
         self.streaming_messages['tasks'].clear()
 
@@ -268,26 +315,72 @@ class VoiceInterface:
         self.tts = None
         self.recognizer = None
         self.microphone = None
+        self.whisper_model = None
         self.has_audio = False
         self.has_tts = False
         self.has_microphone = False
         
         try:
             self.tts = TextToSpeech()
-            self.has_tts = True
-            print(f"{Colors.INFO}🔊 语音输出已就绪{Colors.RESET}")
+            self.has_tts = self.tts.available
+            if self.has_tts:
+                print(f"{Colors.INFO}🔊 语音输出已就绪{Colors.RESET}")
+            else:
+                print(f"{Colors.WARNING}⚠️  语音输出不可用{Colors.RESET}")
         except Exception as e:
+            self.tts = None
+            self.has_tts = False
             print(f"{Colors.WARNING}⚠️  语音输出不可用: {e}{Colors.RESET}")
         
         try:
             self.recognizer = sr.Recognizer()
-            self.microphone = sr.Microphone()
-            with self.microphone as source:
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.1)
-            self.has_microphone = True
-            print(f"{Colors.INFO}🎤 麦克风已就绪{Colors.RESET}")
+            
+            print(f"{Colors.INFO}🎤 尝试检测音频设备...{Colors.RESET}")
+            
+            import subprocess
+            import tempfile
+            
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                test_file = f.name
+            
+            result = subprocess.run(
+                ['arecord', '-f', 'cd', '-d', '1', test_file],
+                capture_output=True, text=True
+            )
+            
+            os.unlink(test_file)
+            
+            if result.returncode == 0:
+                print(f"{Colors.INFO}🎤 arecord 检测到设备，将使用 arecord 录音{Colors.RESET}")
+                self.has_microphone = True
+                self.use_arecord = True
+                
+                print(f"{Colors.INFO}📥 加载 Whisper 模型（离线语音识别）...{Colors.RESET}")
+                try:
+                    import whisper
+                    self.whisper_model = whisper.load_model("medium", device="cpu")
+                    print(f"{Colors.INFO}✅ Whisper 模型加载成功 (medium 模型){Colors.RESET}")
+                except Exception as e:
+                    print(f"{Colors.WARNING}⚠️  Whisper 模型加载失败: {e}{Colors.RESET}")
+                    self.whisper_model = None
+                
+                print(f"{Colors.INFO}🎤 麦克风已就绪{Colors.RESET}")
+            else:
+                devices = sr.Microphone.list_microphone_names()
+                if devices:
+                    print(f"{Colors.INFO}🎤 检测到 {len(devices)} 个音频设备{Colors.RESET}")
+                    self.microphone = sr.Microphone()
+                    with self.microphone as source:
+                        self.recognizer.adjust_for_ambient_noise(source, duration=0.1)
+                    self.has_microphone = True
+                    self.use_arecord = False
+                    print(f"{Colors.INFO}🎤 麦克风已就绪 (使用 speech_recognition){Colors.RESET}")
+                else:
+                    raise RuntimeError("没有检测到音频设备")
         except Exception as e:
             print(f"{Colors.WARNING}⚠️  麦克风不可用: {e}{Colors.RESET}")
+            self.has_microphone = False
+            self.use_arecord = False
         
         self.has_audio = self.has_tts or self.has_microphone
         
@@ -335,14 +428,73 @@ class VoiceInterface:
             return None
         
         print(f"{Colors.INFO}🎤 正在听... (按 Ctrl+C 取消){Colors.RESET}")
+        
         try:
-            with self.microphone as source:
-                self.recognizer.adjust_for_ambient_noise(source)
-                audio = self.recognizer.listen(source, timeout=15)
+            if self.use_arecord:
+                import subprocess
+                import tempfile
+                import wave
+                import numpy as np
+                import whisper
+                
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                    temp_file = f.name
+                
+                result = subprocess.run(
+                    ['arecord', '-f', 'cd', '-d', '5', temp_file],
+                    capture_output=True, text=True,
+                    timeout=10
+                )
+                
+                if result.returncode != 0:
+                    print(f"{Colors.ERROR}❌ 录音失败: {result.stderr}{Colors.RESET}")
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                    return None
+                
+                if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
+                    print(f"{Colors.WARNING}⚠️  录音文件为空{Colors.RESET}")
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                    return None
+                
+                if self.whisper_model:
+                    with wave.open(temp_file, 'rb') as wav_file:
+                        frames = wav_file.readframes(wav_file.getnframes())
+                        audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+                    
+                    os.unlink(temp_file)
+                    
+                    audio_padded = whisper.pad_or_trim(audio_data)
+                    mel = whisper.log_mel_spectrogram(audio_padded, n_mels=80)
+                    
+                    options = whisper.DecodingOptions(language='zh', without_timestamps=True)
+                    result = whisper.decode(self.whisper_model, mel, options)
+                    
+                    text = result.text.strip()
+                    if text:
+                        print(f"{Colors.USER}👤 语音输入: {text}{Colors.RESET}")
+                        return text
+                    else:
+                        print(f"{Colors.INFO}⚠️  未识别到语音内容{Colors.RESET}")
+                        return None
+                else:
+                    with sr.AudioFile(temp_file) as source:
+                        audio = self.recognizer.record(source)
+                    os.unlink(temp_file)
+                    text = self.recognizer.recognize_google(audio, language='zh-CN')
+                    print(f"{Colors.USER}👤 语音输入: {text}{Colors.RESET}")
+                    return text
             
-            text = self.recognizer.recognize_google(audio, language='zh-CN')
-            print(f"{Colors.USER}👤 语音输入: {text}{Colors.RESET}")
-            return text
+            else:
+                with self.microphone as source:
+                    self.recognizer.adjust_for_ambient_noise(source)
+                    audio = self.recognizer.listen(source, timeout=15)
+                
+                text = self.recognizer.recognize_google(audio, language='zh-CN')
+                print(f"{Colors.USER}👤 语音输入: {text}{Colors.RESET}")
+                return text
+                
         except sr.WaitTimeoutError:
             print(f"{Colors.INFO}⏱️  等待超时，请重试{Colors.RESET}")
             return None
@@ -375,7 +527,7 @@ class VoiceInterface:
             self.client = WebSocketClient(uri)
             if await self.client.connect():
                 print(f"{Colors.AI}✅ 已连接到 {uri}{Colors.RESET}")
-                if self.tts:
+                if self.tts and self.has_tts:
                     self.tts.speak(f"已连接到 {uri}")
                 asyncio.create_task(self.client.receive_messages(self.tts))
             else:
@@ -386,7 +538,7 @@ class VoiceInterface:
                 await self.client.disconnect()
                 self.client = None
                 print(f"{Colors.SYSTEM}已断开连接{Colors.RESET}")
-                if self.tts:
+                if self.tts and self.has_tts:
                     self.tts.speak("已断开连接")
             else:
                 print(f"{Colors.ERROR}未连接到服务器{Colors.RESET}")
@@ -394,11 +546,11 @@ class VoiceInterface:
         elif cmd == '/status':
             if self.client and self.client.connected:
                 print(f"{Colors.AI}✅ 已连接: {self.client.uri}{Colors.RESET}")
-                if self.tts:
+                if self.tts and self.has_tts:
                     self.tts.speak(f"已连接到 {self.client.uri}")
             else:
                 print(f"{Colors.SYSTEM}未连接{Colors.RESET}")
-                if self.tts:
+                if self.tts and self.has_tts:
                     self.tts.speak("未连接")
         
         elif cmd == '/clear':
@@ -453,17 +605,19 @@ class VoiceInterface:
     async def run(self):
         self.print_banner()
         
+        prompt = f"{Colors.USER}>>> {Colors.RESET}"
+        
         while True:
             try:
                 user_input = await asyncio.to_thread(
-                    input, f"{Colors.USER}>>> {Colors.RESET}"
+                    lambda: input(prompt)
                 )
                 user_input = user_input.strip()
                 
                 if not user_input:
                     if self.has_microphone:
                         print(f"{Colors.INFO}🎤 开始语音输入...{Colors.RESET}")
-                        voice_text = await asyncio.to_thread(self.listen_voice)
+                        voice_text = self.listen_voice()
                         if voice_text:
                             await self.send_user_message(voice_text)
                     else:
@@ -476,7 +630,7 @@ class VoiceInterface:
                     await self.send_user_message(user_input)
                     
             except KeyboardInterrupt:
-                print(f"\n{Colors.INFO}⏹️  语音输入已取消{Colors.RESET}")
+                print(f"\n{Colors.INFO}⏹️  已取消{Colors.RESET}")
                 continue
             except EOFError:
                 print(f"\n{Colors.SYSTEM}再见！{Colors.RESET}")
@@ -497,7 +651,7 @@ async def main():
     cli.client = WebSocketClient(uri)
     if await cli.client.connect():
         print(f"{Colors.AI}✅ 已连接到 {uri}{Colors.RESET}")
-        if cli.tts:
+        if cli.tts and cli.has_tts:
             cli.tts.speak(f"已连接到 {uri}")
         asyncio.create_task(cli.client.receive_messages(cli.tts))
     else:
@@ -505,7 +659,13 @@ async def main():
         print(f"{Colors.INFO}ℹ️  你可以通过命令行参数指定地址: python voice_client.py ws://your-server:8765{Colors.RESET}")
         print(f"{Colors.INFO}ℹ️  或者使用 /connect 命令手动连接{Colors.RESET}")
     
-    await cli.run()
+    try:
+        await cli.run()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        if cli.client:
+            await cli.client.disconnect()
 
 if __name__ == "__main__":
     try:
