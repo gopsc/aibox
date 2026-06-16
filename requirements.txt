@@ -4,12 +4,7 @@ requests
 beautifulsoup4
 
 # frontend
-#Flask>=2.3.3
-#Flask-SocketIO>=5.3.4
-#python-socketio>=5.9.0
-#python-engineio>=4.5.1
-#websocket-client>=1.6.1
-#eventlet>=0.33.3  # 确保这个安装正确
-#gevent>=22.10.2   # 添加gevent作为备选
-#gevent-websocket>=0.10.1
-#waitress
+websockets>=11.0
+prompt-toolkit>=3.0.0
+rich>=13.0.0
+colorama>=0.4.6
