@@ -427,17 +427,19 @@ async def main():
     """主函数"""
     cli = CommandLineInterface()
     
-    # 检查命令行参数
-    if len(sys.argv) > 1:
-        # 如果提供了WebSocket URL，自动连接
-        uri = sys.argv[1]
-        cli.client = WebSocketClient(uri)
-        if await cli.client.connect():
-            print(f"{Colors.AI}✅ 已连接到 {uri}{Colors.RESET}")
-            asyncio.create_task(cli.client.receive_messages())
-        else:
-            print(f"{Colors.ERROR}无法连接到 {uri}{Colors.RESET}")
-            return
+    # 获取WebSocket地址，命令行参数优先，否则使用默认值
+    default_uri = "ws://localhost:8765"
+    uri = sys.argv[1] if len(sys.argv) > 1 else default_uri
+    
+    # 自动连接到服务器
+    cli.client = WebSocketClient(uri)
+    if await cli.client.connect():
+        print(f"{Colors.AI}✅ 已连接到 {uri}{Colors.RESET}")
+        asyncio.create_task(cli.client.receive_messages())
+    else:
+        print(f"{Colors.ERROR}无法连接到 {uri}{Colors.RESET}")
+        print(f"{Colors.INFO}ℹ️  你可以通过命令行参数指定地址: python client.py ws://your-server:8765{Colors.RESET}")
+        return
     
     await cli.run()
 
