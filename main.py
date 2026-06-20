@@ -6196,7 +6196,9 @@ class DeepSeekChat:
         self.api_key = api_key or os.environ.get(api_key_env)
         if not self.api_key:
             try:
-                with open(f"{os.environ['HOME']}/.cert/deepseek.key", "r") as f:
+                home = os.environ.get("HOME", os.environ["USERPROFILE"])
+                key_path = os.path.join(home, ".cert", "deepseek.key")
+                with open(f"{key_path}", "r") as f:
                     self.api_key = f.read().strip()
             except Exception as e:
                 raise RuntimeError(f"请设置环境变量 {api_key_env} 或在配置文件中设置API Key")
