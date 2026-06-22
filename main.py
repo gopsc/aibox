@@ -6411,42 +6411,27 @@ class DeepSeekChat:
                 output_callback("line", "\n\n")
                 output_callback("line", f"🔧 调用工具: {tool_name}\n")
             
-            # 对于支持流式输出的工具，检查是否需要流式输出
-            tool = self.tool_registry.get_tool(tool_name)
-            supports_streaming = hasattr(tool, 'execute_streaming') if tool else False
-            
-            result = None
-            if supports_streaming and args.get("stream", True):
-                # 在新线程中执行工具 - 修复参数传递问题
-                thread = threading.Thread(
-                    target=lambda: self.tool_registry.execute_tool(tool_name, **args)
-                )
-                thread.daemon = True
-                thread.start()
-                
-                # 实时处理输出 - 确保所有输出都被发送
-                result_lines = []
-                while thread.is_alive() or not output_queue.empty():
-                    try:
-                        msg_type, content = output_queue.get(timeout=0.1)
-                        if msg_type == "line":
-                            if output_callback:
-                                # 确保所有行都发送
-                                output_callback("line", content)
-                            result_lines.append(content)
-                        elif msg_type == "complete":
-                            result = content
-                            result_lines.append(content)
-                    except queue.Empty:
-                        continue
-                
-                result = "".join(result_lines) if result is None else result
-            else:
-                # 普通执行 - 修复参数传递问题
-                result = self.tool_registry.execute_tool(tool_name, **args)
-                # 普通执行也发送结果
-                if output_callback and result:
-                    output_callback("line", result + "\n")
+            # 直接调用 execute_tool（同步）。
+            # - 若工具支持流式：execute_tool 内部开线程调 execute_streaming(**args)，
+            #   收集输出后转发到 current_output_queue（即此处的 output_queue），join 后返回。
+            # - 若工具不支持流式：execute_tool 直接调 execute(**args) 返回结果。
+            # 两种情况下 execute_tool 返回时执行均已完成，args 完整传入，不再有参数丢失。
+            result = self.tool_registry.execute_tool(tool_name, **args)
+
+            # 排空 output_queue，把流式行输出转发给 output_callback
+            has_stream_output = False
+            while not output_queue.empty():
+                try:
+                    msg_type, content = output_queue.get_nowait()
+                    if output_callback and msg_type in ("line", "complete"):
+                        output_callback("line", content)
+                        has_stream_output = True
+                except queue.Empty:
+                    break
+
+            # 普通（非流式）工具没有队列输出，直接发送结果
+            if not has_stream_output and output_callback and result:
+                output_callback("line", result + "\n")
             
             # 检查结果大小，如果超过阈值，不返回结果，只返回提示信息
             if result and len(result) > MAX_RESULT_LENGTH:
