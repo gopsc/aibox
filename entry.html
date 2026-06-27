@@ -716,6 +716,12 @@
         ::-webkit-scrollbar-thumb:hover {
             background: #4d4d4d;
         }
+        
+        /* 自动滚动按钮特殊样式 */
+        #auto-scroll-toggle.active {
+            color: #4CAF50;
+            background: rgba(76, 175, 80, 0.15);
+        }
     </style>
 </head>
 <body>
@@ -796,6 +802,9 @@
                     <span>对话窗口</span>
                 </div>
                 <div class="chat-actions">
+                    <button id="auto-scroll-toggle" class="btn-icon active" title="自动滚动到底部">
+                        <i class="fas fa-arrow-down"></i>
+                    </button>
                     <button id="markdown-toggle" class="btn-icon" title="切换Markdown预览">
                         <i class="fas fa-markdown"></i>
                     </button>
@@ -803,7 +812,7 @@
                         <i class="fas fa-trash-alt"></i>
                     </button>
                     <button id="scroll-bottom-btn" class="btn-icon" title="滚动到底部">
-                        <i class="fas fa-arrow-down"></i>
+                        <i class="fas fa-chevron-down"></i>
                     </button>
                 </div>
             </div>
@@ -827,6 +836,7 @@
                                 <p><strong>⚡ 定时任务将使用橙色显示，每个任务独立显示，不会混在一起</strong></p>
                                 <p><strong>🔄 多个定时任务可以同时执行，互不干扰</strong></p>
                                 <p><strong>🔌 通过 Socket.IO 代理连接，支持 WebSocket 代理</strong></p>
+                                <p><strong>📌 点击顶部 <i class="fas fa-arrow-down"></i> 按钮可开关自动滚动</strong></p>
                             </div>
                         </div>
                     </div>
@@ -991,6 +1001,32 @@
                 mangle: false
             });
             
+            // ==================== 自动滚动控制 ====================
+            let autoScrollEnabled = true;
+            const autoScrollToggle = document.getElementById('auto-scroll-toggle');
+            
+            autoScrollToggle.addEventListener('click', function() {
+                autoScrollEnabled = !autoScrollEnabled;
+                this.classList.toggle('active', autoScrollEnabled);
+                
+                // 如果开启自动滚动，立即滚动到底部
+                if (autoScrollEnabled) {
+                    const container = document.getElementById('messages-container');
+                    container.scrollTop = container.scrollHeight;
+                    showSystemMessage('✅ 自动滚动已开启');
+                } else {
+                    showSystemMessage('⏸️ 自动滚动已暂停');
+                }
+            });
+            
+            // 监听用户手动滚动，如果用户向上滚动，我们不做干预，保持当前状态
+            // 但如果用户滚动到底部，且自动滚动开启，我们继续保持
+            const container = document.getElementById('messages-container');
+            container.addEventListener('scroll', function() {
+                // 如果用户手动滚动到底部，且自动滚动开启，不需要额外操作
+                // 如果用户向上滚动，我们保持自动滚动状态不变，但不会强制滚动
+            });
+            
             // ==================== 流式消息管理 ====================
             let streamingMessages = {
                 chat: {
@@ -1049,6 +1085,27 @@
                 });
             }
             
+            // 判断是否应该自动滚动到底部 - 简化逻辑，只要自动滚动开启就滚动
+            function shouldAutoScroll(container) {
+                if (!autoScrollEnabled) return false;
+                if (!container) return false;
+                return true;
+            }
+            
+            // 安全地滚动到底部
+            function scrollToBottomIfNeeded(container) {
+                if (shouldAutoScroll(container)) {
+                    container.scrollTop = container.scrollHeight;
+                }
+            }
+            
+            // 强制滚动到底部（用户主动操作时使用）
+            function forceScrollToBottom(container) {
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
+                }
+            }
+            
             // 更新流式显示
             function updateStreamingDisplay(type = 'chat', executionId = null) {
                 let streamData;
@@ -1077,7 +1134,8 @@
                 }
                 
                 const container = document.getElementById('messages-container');
-                container.scrollTop = container.scrollHeight;
+                // 如果自动滚动开启，滚动到底部
+                scrollToBottomIfNeeded(container);
                 
                 streamData.lastUpdateTime = Date.now();
                 streamData.timer = null;
@@ -1111,6 +1169,8 @@
                         textDiv.setAttribute('data-raw-content', '');
                         
                         streamData.lastUpdateTime = Date.now();
+                        // 新消息添加时判断是否滚动
+                        scrollToBottomIfNeeded(container);
                     }
                     
                     streamData.content += content;
@@ -1186,7 +1246,8 @@
                         textDiv.setAttribute('data-raw-content', '');
                         streamingMessages.tasks[executionId].lastUpdateTime = Date.now();
                         
-                        container.scrollTop = container.scrollHeight;
+                        // 新任务添加时判断是否滚动
+                        scrollToBottomIfNeeded(container);
                     }
                     
                     streamData = streamingMessages.tasks[executionId];
@@ -1300,9 +1361,10 @@
                 });
                 messageText.textContent = message;
                 
-                document.getElementById('messages-container').appendChild(clone);
-                document.getElementById('messages-container').scrollTop = 
-                    document.getElementById('messages-container').scrollHeight;
+                const container = document.getElementById('messages-container');
+                container.appendChild(clone);
+                // 同样只在接近底部时自动滚动
+                scrollToBottomIfNeeded(container);
             }
             
             // 处理对话结束
@@ -1318,7 +1380,9 @@
                         minute: '2-digit', 
                         second: '2-digit' 
                     });
-                    document.getElementById('messages-container').appendChild(clone);
+                    const container = document.getElementById('messages-container');
+                    container.appendChild(clone);
+                    scrollToBottomIfNeeded(container);
                 }
                 
                 if (streamingMessages.chat.element) {
@@ -1337,8 +1401,8 @@
                     isActive: false
                 };
                 
-                document.getElementById('messages-container').scrollTop = 
-                    document.getElementById('messages-container').scrollHeight;
+                const container = document.getElementById('messages-container');
+                scrollToBottomIfNeeded(container);
             }
             
             // Markdown切换
@@ -1582,9 +1646,10 @@
                 timeSpan.textContent = timestamp;
                 messageText.textContent = message;
                 
-                document.getElementById('messages-container').appendChild(clone);
-                document.getElementById('messages-container').scrollTop = 
-                    document.getElementById('messages-container').scrollHeight;
+                const container = document.getElementById('messages-container');
+                container.appendChild(clone);
+                // 用户发送消息后总是滚动到底部，便于查看
+                forceScrollToBottom(container);
                 
                 // 发送消息到服务器
                 let sendData;
@@ -1662,7 +1727,7 @@
             
             document.getElementById('scroll-bottom-btn').addEventListener('click', function() {
                 const container = document.getElementById('messages-container');
-                container.scrollTop = container.scrollHeight;
+                forceScrollToBottom(container);
             });
             
             document.querySelectorAll('.tab-btn').forEach(btn => {
