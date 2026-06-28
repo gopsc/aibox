@@ -56,21 +56,26 @@ class I18n:
         if not self._strings:
             self._detect_language()
             self._load_strings()
-    
+
     def _detect_language(self):
-        """检测系统语言环境"""
-        try:
-            system_locale, _ = locale.getdefaultlocale()
-            if system_locale:
-                if system_locale.startswith('en_'):
+        # 首先尝试从环境变量获取（Linux/Mac）
+        lang = os.environ.get('LANG') or os.environ.get('LC_ALL')
+        if lang:
+            if lang.startswith('en_'):
+                self._lang = 'en'
+            else:
+                self._lang = 'zh'
+        else:
+            # Windows: 使用 locale.getlocale()（无需 setlocale）
+            try:
+                sys_locale = locale.getlocale()[0]
+                if sys_locale and sys_locale.startswith('en_'):
                     self._lang = 'en'
                 else:
                     self._lang = 'zh'
-            else:
+            except:
                 self._lang = 'zh'
-        except:
-            self._lang = 'zh'
-        
+        # 强制覆盖
         force_lang = os.environ.get("AI_LANGUAGE")
         if force_lang in ['en', 'zh']:
             self._lang = force_lang
