@@ -56,21 +56,26 @@ class I18n:
         if not self._strings:
             self._detect_language()
             self._load_strings()
-    
+
     def _detect_language(self):
-        """检测系统语言环境"""
-        try:
-            system_locale, _ = locale.getdefaultlocale()
-            if system_locale:
-                if system_locale.startswith('en_'):
+        # 首先尝试从环境变量获取（Linux/Mac）
+        lang = os.environ.get('LANG') or os.environ.get('LC_ALL')
+        if lang:
+            if lang.startswith('en_'):
+                self._lang = 'en'
+            else:
+                self._lang = 'zh'
+        else:
+            # Windows: 使用 locale.getlocale()（无需 setlocale）
+            try:
+                sys_locale = locale.getlocale()[0]
+                if sys_locale and sys_locale.startswith('en_'):
                     self._lang = 'en'
                 else:
                     self._lang = 'zh'
-            else:
+            except:
                 self._lang = 'zh'
-        except:
-            self._lang = 'zh'
-        
+        # 强制覆盖
         force_lang = os.environ.get("AI_LANGUAGE")
         if force_lang in ['en', 'zh']:
             self._lang = force_lang
@@ -6526,21 +6531,33 @@ class DeepSeekChat:
         self.stats["api_calls"] += 1
         
         # 前置提示词
-        pre_prompt = """【系统指令】
-                在回答用户问题之前，请务必先执行以下步骤：
-                1. 使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆
-                2. 如果搜索结果中有相关信息，请在回答中适当引用
-                3. 这能帮助你保持对话的连贯性，避免重复询问同样的问题
-        
-                【重要】
-                - 每次回答前都必须执行记忆搜索
-                - 如果记忆库中没有相关信息，正常回答即可
-                - 对话结束时，必须使用 `save_memory_and_end_conversation` 工具保存本次对话的重要信息并更新智能体状态
-                - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
-                - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
-                - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
-        
-                现在请处理用户的输入："""
+        pre_prompt = """【系统指令 - 核心工作流程】
+
+        在开始任何任务之前，你必须严格按照以下优先级执行：
+
+        ## 第一步：搜索可用技能（最高优先级）⭐
+        当用户提出任何任务、需求或问题时，**必须先使用 `search_skills` 工具**搜索相关技能：
+        - 使用 `search_skills keyword="[任务关键词]"` 搜索是否有现成的扩展技能可以完成该任务
+        - 例如：用户说"帮我查天气"，你应该先执行 `search_skills keyword="天气"`
+        - 例如：用户说"帮我计算BMI"，你应该先执行 `search_skills keyword="BMI"`
+        - 如果搜索结果中有匹配的技能，优先使用该技能完成任务
+        - 只有在没有合适技能的情况下，才考虑使用其他工具或方法
+
+        ## 第二步：搜索相关记忆
+        在每次回答用户问题前，**必须**使用 `memory search` 工具搜索记忆库中与当前话题相关的记忆，确保回答的连贯性和准确性。
+
+        ## 第三步：执行任务或回答问题
+        根据搜索结果，选择合适的工具或直接回答。
+
+        【重要提醒】
+        - 技能优先原则：有技能先用技能，不要自己硬编码实现
+        - 如果没有合适的技能，可以使用其他工具或直接回答
+        - 对话结束时，必须使用 `save_memory_and_end_conversation` 工具保存本次对话的重要信息并更新智能体状态
+        - 当了解到用户的身份信息时，使用 `update_identity` 工具更新 00_IDENTITY.md
+        - 当你的角色、性格、能力边界需要调整时，使用 `update_soul` 工具更新 99_SOUL.md 文件来重新定义自己
+        - 绝对不要直接打开大文件来读，应该使用额外的压缩工具
+
+        现在请处理用户的输入："""
         
         # 后置提示词
         post_prompt = """
