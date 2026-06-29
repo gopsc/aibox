@@ -222,6 +222,7 @@ class SimpleCLI:
         if not content:
             return
         
+        # 清理内容
         clean = self._clean_content(content)
         if not clean:
             return
@@ -234,6 +235,10 @@ class SimpleCLI:
         if self.ai_previous and clean.startswith(self.ai_previous):
             new_part = clean[len(self.ai_previous):]
             if new_part:
+                # 如果是首次流式输出，显示前缀
+                if not self.ai_prefix_shown:
+                    self._print_stream("")
+                    self.ai_prefix_shown = True
                 self._print_stream(new_part)
                 self.ai_previous = clean
                 self.ai_full = clean
@@ -243,12 +248,18 @@ class SimpleCLI:
             idx = clean.find(self.ai_previous) + len(self.ai_previous)
             new_part = clean[idx:]
             if new_part:
+                if not self.ai_prefix_shown:
+                    self._print_stream("")
+                    self.ai_prefix_shown = True
                 self._print_stream(new_part)
                 self.ai_previous = clean
                 self.ai_full = clean
             return
         
-        # 全新内容
+        # 全新内容 - 显示前缀和内容
+        if not self.ai_prefix_shown:
+            self._print_stream("")
+            self.ai_prefix_shown = True
         self._print_stream(clean)
         self.ai_previous = clean
         self.ai_full = clean
@@ -293,44 +304,40 @@ class SimpleCLI:
         self._show_streaming(content)
     
     def _handle_complete(self, content: str):
-        """处理完成事件"""
+        """处理完成事件 - 只负责结束流式输出，不重复显示内容"""
+        # 如果流式输出正在进行，结束它
+        if self.streaming_line:
+            self._finish_stream()
+        
+        # 如果内容不为空，检查是否已经通过流式显示了
         if content and content.strip():
-            if content.startswith(('📩', '[', '📁', '🔧', '📝')):
-                self._finish_stream()
-                self._print_line(f"{Colors.INFO}{content}{Colors.RESET}")
-                self.ai_previous = ""
-                self.ai_full = ""
-                self.ai_prefix_shown = False
-                self.streaming_line = False
-                return
-            
-            # 检查是否已通过流式显示
             clean = self._clean_content(content)
-            if clean and self.ai_previous and clean == self.ai_previous:
-                self._finish_stream()
-                self.ai_previous = ""
-                self.ai_full = ""
-                self.ai_prefix_shown = False
-                self.streaming_line = False
-                return
-            
-            # 显示完整消息
-            self._finish_stream()
-            self._print_line(f"{Colors.AI}🤖 AI助手: {clean}")
-            self.ai_previous = ""
-            self.ai_full = ""
-            self.ai_prefix_shown = False
-            self.streaming_line = False
-            return
-        
-        # complete没有内容，但流式有内容
-        if self.ai_full:
-            self._finish_stream()
-            key = self.ai_full[:200]
-            if key not in self.displayed_messages:
+            if clean:
+                # 检查是否已通过流式显示（比较完整内容或前缀匹配）
+                # 只要 clean 包含在 ai_full 中，或者 ai_full 包含在 clean 中，就认为已显示
+                if self.ai_full and (clean in self.ai_full or self.ai_full in clean):
+                    # 已经流式显示过了，不重复打印
+                    self.ai_previous = ""
+                    self.ai_full = ""
+                    self.ai_prefix_shown = False
+                    self.streaming_line = False
+                    return
+                
+                # 检查是否已经在 displayed_messages 中
+                key = clean[:200]
+                if key in self.displayed_messages:
+                    self.ai_previous = ""
+                    self.ai_full = ""
+                    self.ai_prefix_shown = False
+                    self.streaming_line = False
+                    return
+                
+                # 只有当内容没有被流式显示时才显示完整消息
                 self.displayed_messages.add(key)
-                self._print_line(f"{Colors.AI}🤖 AI助手: {self.ai_full}")
+                # 如果之前没有流式输出，现在显示完整消息
+                self._print_line(f"{Colors.AI}🤖 AI助手: {clean}")
         
+        # 重置状态
         self.ai_previous = ""
         self.ai_full = ""
         self.ai_prefix_shown = False
