@@ -143,8 +143,8 @@ class SimpleCLI:
         
         # 流式输出状态
         self.streaming_line = False  # 是否正在流式输出行
-        self.is_tool_output = False  # 是否正在输出工具结果
-        self.should_show_prompt = True  # 是否应该显示提示符
+        self.in_tool_phase = False  # 是否在工具调用阶段
+        self.prompt_visible = True  # 提示符是否可见
         
         # 命令列表
         self.commands = {
@@ -169,20 +169,37 @@ class SimpleCLI:
             sys.stdout.write('\r' + ' ' * 120 + '\r')
             sys.stdout.write(line + end)
             sys.stdout.flush()
-            if self.should_show_prompt:
-                sys.stdout.write(self._get_prompt() + current)
-                sys.stdout.flush()
+            self._show_prompt()
             self.streaming_line = False
     
+    def _show_prompt(self):
+        """显示提示符（内部方法，需要持有锁）"""
+        if self.prompt_visible and not self.in_tool_phase:
+            current = self.current_input
+            sys.stdout.write(self._get_prompt() + current)
+            sys.stdout.flush()
+    
+    def _hide_prompt(self):
+        """隐藏提示符（内部方法，需要持有锁）"""
+        if self.prompt_visible:
+            sys.stdout.write('\r' + ' ' * 120 + '\r')
+            sys.stdout.flush()
+            self.prompt_visible = False
+    
+    def _restore_prompt(self):
+        """恢复提示符（内部方法，需要持有锁）"""
+        if not self.prompt_visible:
+            self.prompt_visible = True
+            self._show_prompt()
+    
     def _print_prompt(self, clear_input: bool = False):
-        """显示提示符"""
+        """显示提示符（公共方法）"""
         with self.lock:
             if clear_input:
                 self.current_input = ""
-            if self.should_show_prompt:
-                sys.stdout.write('\r' + ' ' * 120 + '\r')
-                sys.stdout.write(self._get_prompt() + self.current_input)
-                sys.stdout.flush()
+            self.prompt_visible = True
+            self.in_tool_phase = False
+            self._show_prompt()
             self.streaming_line = False
     
     def _print_stream(self, text: str):
@@ -206,14 +223,11 @@ class SimpleCLI:
     def _finish_stream(self):
         """完成流式输出，换行并恢复提示符"""
         with self.lock:
-            current = self.current_input
             if self.streaming_line:
                 sys.stdout.write('\n')
                 self.streaming_line = False
-            # 只有在不是工具输出且应该显示提示符时才恢复提示符
-            if not self.is_tool_output and self.should_show_prompt:
-                sys.stdout.write(self._get_prompt() + current)
-                sys.stdout.flush()
+            if not self.in_tool_phase:
+                self._show_prompt()
     
     def _clean_content(self, content: str) -> str:
         if not content:
@@ -281,15 +295,19 @@ class SimpleCLI:
         elif msg_type == 'task_complete':
             self._handle_task_complete(extra)
         elif msg_type == 'dialogue_ended':
-            self._finish_stream()
+            with self.lock:
+                if self.streaming_line:
+                    sys.stdout.write('\n')
+                    self.streaming_line = False
+                self.in_tool_phase = False
+                self.prompt_visible = True
+                self._show_prompt()
             self._print_line(f"{Colors.SYSTEM}✅ {content}{Colors.RESET}")
             self.ai_previous = ""
             self.ai_full = ""
             self.ai_prefix_shown = False
             self.displayed_messages.clear()
             self.streaming_line = False
-            self.is_tool_output = False
-            self.should_show_prompt = True
         elif msg_type == 'system':
             self._finish_stream()
             self._print_line(f"{Colors.SYSTEM}{content}{Colors.RESET}")
@@ -304,33 +322,29 @@ class SimpleCLI:
         """处理流式块"""
         # 检查是否是工具调用相关的消息
         if content.startswith('🔧 调用工具'):
-            self.is_tool_output = True
-            self.should_show_prompt = False
-            # 直接打印，不恢复提示符
             with self.lock:
+                self.in_tool_phase = True
+                # 隐藏提示符
+                self._hide_prompt()
+                # 打印工具调用信息
                 sys.stdout.write('\n' + f"{Colors.TASK}{content}{Colors.RESET}\n")
                 sys.stdout.flush()
             return
         
         # 检查是否是工具结果
         if content.startswith(('✅ 对话记忆已保存', '💾 保存记忆', '❌', '⚠️')):
-            self.is_tool_output = True
-            self.should_show_prompt = False
-            # 直接打印，不恢复提示符
             with self.lock:
+                # 打印工具结果
                 sys.stdout.write(f"{Colors.TASK}{content}{Colors.RESET}\n")
                 sys.stdout.flush()
             return
         
-        # 如果之前是工具输出，现在结束工具输出模式
-        if self.is_tool_output:
-            self.is_tool_output = False
-            self.should_show_prompt = True
-            # 恢复提示符
+        # 如果之前在工具阶段，现在退出工具阶段
+        if self.in_tool_phase:
             with self.lock:
-                current = self.current_input
-                sys.stdout.write(self._get_prompt() + current)
-                sys.stdout.flush()
+                self.in_tool_phase = False
+                self.prompt_visible = True
+                self._show_prompt()
         
         # 系统消息
         if content.startswith(('📩', '[', '📁', '🔧', '📝', '✅', 'ℹ️', '⏰')):
@@ -343,19 +357,16 @@ class SimpleCLI:
     
     def _handle_complete(self, content: str):
         """处理完成事件 - 只负责结束流式输出，不重复显示内容"""
-        # 如果是工具输出，不重复显示
-        if self.is_tool_output:
-            self.is_tool_output = False
-            self.should_show_prompt = True
+        # 如果之前在工具阶段，现在退出
+        if self.in_tool_phase:
+            with self.lock:
+                self.in_tool_phase = False
+                self.prompt_visible = True
+                self._show_prompt()
             self.ai_previous = ""
             self.ai_full = ""
             self.ai_prefix_shown = False
             self.streaming_line = False
-            # 恢复提示符
-            with self.lock:
-                current = self.current_input
-                sys.stdout.write(self._get_prompt() + current)
-                sys.stdout.flush()
             return
         
         # 如果流式输出正在进行，结束它
@@ -394,7 +405,6 @@ class SimpleCLI:
         self.ai_full = ""
         self.ai_prefix_shown = False
         self.streaming_line = False
-        self.should_show_prompt = True
     
     def _handle_task_chunk(self, content: str, task_title: str):
         """处理任务流式块"""
@@ -560,8 +570,8 @@ class SimpleCLI:
         self.ai_full = ""
         self.ai_prefix_shown = False
         self.streaming_line = False
-        self.is_tool_output = False
-        self.should_show_prompt = True
+        self.in_tool_phase = False
+        self.prompt_visible = True
         
         self.display("system", f"{Colors.USER}👤 用户: {message}{Colors.RESET}")
         await self.client.send_message(message)
