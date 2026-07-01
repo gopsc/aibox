@@ -3804,24 +3804,26 @@ class ToolRegistry:
         return builtin_count, skill_count
 
 
-# ==================== 扩展技能管理器 ====================
+# ==================== 扩展技能管理器（支持 Markdown 格式） ====================
 
 class SkillManager:
-    """扩展技能管理器 - 收集并管理 ~/.aibox/skills/ 目录下的可执行技能。
+    """扩展技能管理器 - 收集并管理 ~/.aibox/skills/ 目录下的技能文件。
     
-    启动时对所有技能执行 --help，收集第一行作为简介摘要。
+    支持两种技能格式：
+    1. 可执行脚本/程序：执行 --help，第一行为简介
+    2. Markdown 文件 (.md)：第一行为简介（# 标题或普通文本），其余为技能内容
     """
-
+    
     def __init__(self, logger: Optional[Logger] = None):
         self.logger = logger or Logger("SkillManager")
-        # name -> {path, file, summary}
+        # name -> {path, file, summary, content, is_markdown}
         self.skills: Dict[str, Dict] = {}
         self._load_skills()
-
+    
     # ------------------------------------------------------------------
     # 内部辅助
     # ------------------------------------------------------------------
-
+    
     def _run_help(self, skill_path: str) -> str:
         """执行 skill_path --help 并返回完整输出（stdout 优先，否则 stderr）。"""
         try:
@@ -3839,7 +3841,38 @@ class SkillManager:
         except Exception as e:
             self.logger.warning(f"运行 {skill_path} --help 失败: {e}")
             return ""
-
+    
+    def _read_markdown_skill(self, skill_path: str) -> Tuple[str, str]:
+        """读取 Markdown 技能文件，返回 (简介, 完整内容)"""
+        try:
+            with open(skill_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            
+            if not content:
+                return "（空文件）", ""
+            
+            # 提取第一行非空内容作为简介
+            lines = content.splitlines()
+            summary = ""
+            for line in lines:
+                stripped = line.strip()
+                if stripped:
+                    # 如果是 Markdown 标题，去掉 # 前缀
+                    if stripped.startswith('#'):
+                        summary = stripped.lstrip('#').strip()
+                    else:
+                        summary = stripped
+                    break
+            
+            if not summary:
+                summary = os.path.basename(skill_path).replace('.md', '')
+            
+            return summary, content
+            
+        except Exception as e:
+            self.logger.warning(f"读取 Markdown 技能文件失败 {skill_path}: {e}")
+            return "（读取失败）", ""
+    
     @staticmethod
     def _first_nonempty_line(text: str) -> str:
         """返回文本中第一行非空内容。"""
@@ -3848,104 +3881,177 @@ class SkillManager:
             if stripped:
                 return stripped
         return ""
-
+    
+    def _is_markdown_file(self, filename: str) -> bool:
+        """判断是否为 Markdown 文件"""
+        return filename.lower().endswith('.md')
+    
+    def _is_executable(self, filepath: str) -> bool:
+        """检查文件是否可执行"""
+        if os.name == 'nt':  # Windows
+            # Windows 下检查扩展名
+            executable_extensions = {'.exe', '.bat', '.cmd', '.ps1', '.py', '.sh'}
+            ext = os.path.splitext(filepath)[1].lower()
+            return ext in executable_extensions
+        else:  # Unix/Linux/Mac
+            return os.access(filepath, os.X_OK)
+    
     # ------------------------------------------------------------------
     # 加载 / 重载
     # ------------------------------------------------------------------
-
+    
     def _load_skills(self):
-        """扫描技能目录，对每个技能执行 --help 收集简介。"""
+        """扫描技能目录，加载所有技能文件（可执行文件或 Markdown 文件）。"""
         skills_dir = constants.SKILLS_DIR
         self.skills = {}
-
+        
         if not os.path.exists(skills_dir):
+            self.logger.info(f"技能目录不存在: {skills_dir}")
             return
-
+        
         skill_files = [
             f for f in os.listdir(skills_dir)
             if os.path.isfile(os.path.join(skills_dir, f))
-            and not f.startswith("_")
+            and not f.startswith('_')
+            and not f.startswith('.')
         ]
-
+        
         for skill_file in skill_files:
             skill_path = os.path.join(skills_dir, skill_file)
             skill_name = os.path.splitext(skill_file)[0]
-
-            # 确保文件可执行
-            if not os.access(skill_path, os.X_OK):
-                self.logger.warning(f"技能文件不可执行（跳过）: {skill_file}")
-                continue
-
-            help_output = self._run_help(skill_path)
-            summary = self._first_nonempty_line(help_output) or f"扩展技能: {skill_name}"
-
-            self.skills[skill_name] = {
-                "path": skill_path,
-                "file": skill_file,
-                "summary": summary,
-            }
-            self.logger.info(f"已加载技能: {skill_name} — {summary}")
-
-        self.logger.info(f"共加载 {len(self.skills)} 个扩展技能")
-
+            is_markdown = self._is_markdown_file(skill_file)
+            
+            if is_markdown:
+                # Markdown 格式技能：直接读取内容
+                summary, content = self._read_markdown_skill(skill_path)
+                if content:
+                    self.skills[skill_name] = {
+                        "path": skill_path,
+                        "file": skill_file,
+                        "summary": summary,
+                        "content": content,
+                        "is_markdown": True,
+                        "is_executable": False
+                    }
+                    self.logger.info(f"已加载 Markdown 技能: {skill_name} — {summary}")
+                else:
+                    self.logger.warning(f"Markdown 技能文件为空（跳过）: {skill_file}")
+            
+            else:
+                # 可执行文件格式技能：执行 --help 获取简介
+                if not self._is_executable(skill_path):
+                    self.logger.warning(f"技能文件不可执行（跳过）: {skill_file}")
+                    continue
+                
+                help_output = self._run_help(skill_path)
+                summary = self._first_nonempty_line(help_output) or f"扩展技能: {skill_name}"
+                
+                self.skills[skill_name] = {
+                    "path": skill_path,
+                    "file": skill_file,
+                    "summary": summary,
+                    "content": help_output,  # 完整的 --help 输出作为内容
+                    "is_markdown": False,
+                    "is_executable": True
+                }
+                self.logger.info(f"已加载可执行技能: {skill_name} — {summary}")
+        
+        self.logger.info(f"共加载 {len(self.skills)} 个技能（{len([s for s in self.skills.values() if s['is_markdown']])} 个 Markdown 技能）")
+    
     def reload(self) -> int:
         """重新扫描技能目录，返回加载的技能数量。"""
         self._load_skills()
         return len(self.skills)
-
+    
     # ------------------------------------------------------------------
     # 查询
     # ------------------------------------------------------------------
-
+    
     def search(self, keyword: str) -> List[Dict]:
-        """在技能名称和简介中搜索关键字，返回匹配项列表。"""
+        """在技能名称、简介和内容中搜索关键字，返回匹配项列表。"""
         kw = keyword.lower()
-        return [
-            {"name": name, "path": info["path"], "summary": info["summary"]}
-            for name, info in self.skills.items()
-            if kw in name.lower() or kw in info["summary"].lower()
-        ]
-
+        results = []
+        for name, info in self.skills.items():
+            match = (
+                kw in name.lower() or
+                kw in info["summary"].lower() or
+                kw in info.get("content", "").lower()
+            )
+            if match:
+                results.append({
+                    "name": name,
+                    "path": info["path"],
+                    "summary": info["summary"],
+                    "content": info.get("content", ""),
+                    "is_markdown": info.get("is_markdown", False),
+                    "is_executable": info.get("is_executable", False)
+                })
+        return results
+    
+    def get_skill_content(self, skill_name: str) -> Optional[str]:
+        """获取技能的内容（Markdown 技能返回完整内容，可执行技能返回 --help 输出）"""
+        info = self.skills.get(skill_name)
+        if info:
+            return info.get("content")
+        return None
+    
+    def get_skill(self, skill_name: str) -> Optional[Dict]:
+        """获取单个技能的完整信息"""
+        return self.skills.get(skill_name)
+    
     def get_all(self) -> List[Dict]:
-        """返回所有技能的列表（含名称、路径和简介）。"""
+        """返回所有技能的列表（含名称、路径、简介和内容）。"""
         return [
-            {"name": name, "path": info["path"], "summary": info["summary"]}
+            {
+                "name": name,
+                "path": info["path"],
+                "summary": info["summary"],
+                "content": info.get("content", ""),
+                "is_markdown": info.get("is_markdown", False),
+                "is_executable": info.get("is_executable", False)
+            }
             for name, info in self.skills.items()
         ]
-
+    
     def count(self) -> int:
         return len(self.skills)
 
 
-# ==================== 扩展技能搜索工具 ====================
-
 class SearchSkillsTool(Tool):
-    """扩展技能搜索工具 - 按关键字搜索 ~/.aibox/skills/ 下的可执行技能。
-
+    """扩展技能搜索工具 - 按关键字搜索 ~/.aibox/skills/ 下的技能文件。
+    
+    支持两种技能格式：
+    1. 可执行脚本/程序：通过 --help 获取简介和完整使用说明
+    2. Markdown 文件 (.md)：第一行为简介，其余为技能内容
+    
     工作流程：
-    1. 用关键字调用本工具，获取匹配技能的名称和简介列表。
-    2. 对感兴趣的技能，通过 run_command 执行 "技能名 --help" 查看完整命令手册。
-    3. 根据手册，使用 run_command 工具按照正确的命令行格式调用该技能。
+    1. 用关键字调用本工具，获取匹配技能的名称和简介列表
+    2. 对于 Markdown 技能，可以直接读取 content 字段获取完整技能内容
+    3. 对于可执行技能，通过 run_command 执行 "技能名 --help" 查看完整命令手册
+    4. 根据内容，使用相应方式调用技能
     """
-
+    
     def __init__(self, skill_manager: SkillManager, logger: Optional[Logger] = None):
         super().__init__(logger)
         self.skill_manager = skill_manager
-
+    
     def get_name(self) -> str:
         return "search_skills"
-
+    
     def get_description(self) -> str:
         return (
             "扩展技能搜索工具。\n\n"
-            "用关键字搜索 ~/.aibox/skills/ 目录下的可执行扩展技能，"
-            "返回匹配技能的名称和一行简介。\n\n"
+            "用关键字搜索 ~/.aibox/skills/ 目录下的技能文件。\n"
+            "支持两种技能格式：\n"
+            "  1. 可执行脚本/程序：通过 --help 获取简介和完整使用说明\n"
+            "  2. Markdown 文件 (.md)：第一行为简介，其余为技能内容\n\n"
             "使用方法：\n"
-            "1. 调用本工具搜索关键字，获取技能列表（空字符串列出全部）。\n"
-            "2. 对目标技能用 run_command 执行 \"技能名 --help\" 获取完整命令手册。\n"
-            "3. 按照手册，用 run_command 以正确的命令行格式调用该技能。"
+            "1. 调用本工具搜索关键字，获取匹配技能列表（空字符串列出全部）。\n"
+            "2. 对于 Markdown 技能：直接读取返回的 content 字段获取完整技能内容。\n"
+            "3. 对于可执行技能：用 run_command 执行 \"技能名 --help\" 获取完整命令手册。\n"
+            "4. 按照内容说明，使用相应方式调用该技能。"
         )
-
+    
     def get_parameters(self) -> Dict:
         return {
             "type": "object",
@@ -3953,15 +4059,24 @@ class SearchSkillsTool(Tool):
                 "keyword": {
                     "type": "string",
                     "description": (
-                        "搜索关键字，在技能名称和简介中进行匹配。"
+                        "搜索关键字，在技能名称、简介和内容中进行匹配。"
                         "传入空字符串可列出全部可用技能。"
                     )
+                },
+                "show_content": {
+                    "type": "boolean",
+                    "description": (
+                        "是否在结果中显示技能内容。"
+                        "对于 Markdown 技能，这会影响返回结果的详细程度。"
+                        "默认 False（只显示名称和简介）。"
+                    ),
+                    "default": False
                 }
             },
             "required": ["keyword"]
         }
-
-    def execute(self, keyword: str = "", **kwargs) -> str:
+    
+    def execute(self, keyword: str = "", show_content: bool = False, **kwargs) -> str:
         kw = keyword.strip()
         if kw:
             results = self.skill_manager.search(kw)
@@ -3972,18 +4087,55 @@ class SearchSkillsTool(Tool):
             )
         else:
             results = self.skill_manager.get_all()
-            header = f"🔧 所有可用扩展技能（共 {len(results)} 个）："
+            header = f"🔧 所有可用技能（共 {len(results)} 个）："
             empty_msg = "❌ ~/.aibox/skills/ 目录下暂无可用技能。"
-
+        
         if not results:
             return empty_msg
-
+        
         lines = [header]
         for item in results:
-            lines.append(f"  • {item['name']} — {item['summary']}")
+            skill_type = "📄 Markdown" if item.get('is_markdown') else "⚙️ 可执行"
+            lines.append(f"\n  {skill_type} • {item['name']}")
+            lines.append(f"    简介: {item['summary']}")
+            
+            if show_content and item.get('content'):
+                content = item['content']
+                if item.get('is_markdown'):
+                    preview = content[:500]
+                    if len(content) > 500:
+                        preview += "...\n    （内容较长，已截断，请直接读取技能文件获取完整内容）"
+                    lines.append(f"    内容预览:\n    {preview}")
+                else:
+                    preview = content[:200] if content else "(无帮助输出)"
+                    if len(content) > 200:
+                        preview += "..."
+                    lines.append(f"    帮助预览: {preview}")
+            else:
+                if item.get('is_markdown'):
+                    lines.append(f"    💡 提示: 设置 show_content=true 可查看技能内容")
+                else:
+                    lines.append(f"    💡 提示: 用 run_command 执行 \"{item['name']} --help\" 查看完整手册")
+        
         lines.append("")
-        lines.append("💡 提示：用 run_command 执行 \"技能名 --help\" 可获取完整命令手册。")
+        lines.append("📖 技能调用方式:")
+        lines.append("  • Markdown 技能: 读取 content 字段获取完整技能指令")
+        lines.append("  • 可执行技能: 用 run_command 执行 '技能名 --help' 查看手册")
         return "\n".join(lines)
+    
+    def execute_streaming(self, output_queue: queue.Queue, **kwargs):
+        """流式执行搜索技能"""
+        keyword = kwargs.get("keyword", "")
+        show_content = kwargs.get("show_content", False)
+        
+        output_queue.put(("line", f"\n🔍 搜索技能: {keyword if keyword else '(全部)'}\n"))
+        output_queue.put(("line", "-" * 50 + "\n"))
+        
+        # 直接传递 kwargs，避免重复参数
+        result = self.execute(**kwargs)
+        
+        output_queue.put(("line", result + "\n"))
+        output_queue.put(("complete", result))
 
 
 # ==================== 技能热重载工具 ====================
