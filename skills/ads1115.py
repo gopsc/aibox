@@ -284,6 +284,9 @@ def main():
   --config         显示配置寄存器详情
 
   --percent        输出基于 0-5V 范围的百分比 (0.00%~100.00%)
+  --map            将 0-5V 百分比映射到自定义数值区间，格式 "min,max"
+                   例: --map -20,80 表示 0V=-20, 5V=80
+                   使用 --map 时自动启用百分比显示
 
 使用示例:
   ads1115                                    # 读取 AIN0 (默认参数)
@@ -297,6 +300,8 @@ def main():
   ads1115 --scan --config                    # 扫描并查看配置
   ads1115 -c 0 --percent                     # 读取 AIN0 并显示 0-5V 百分比
   ads1115 --scan --percent                   # 扫描所有通道并显示百分比
+  ads1115 -c 0 --map -20,80                 # 将 0-5V 映射到 -20~80 区间
+  ads1115 --scan --map 0,100                # 扫描并映射到 0~100 区间
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -312,19 +317,42 @@ def main():
     parser.add_argument("--delay", type=int, default=10, help="每次读取间隔毫秒 (默认 10ms)")
     parser.add_argument("--config", action="store_true", help="显示配置寄存器详情")
     parser.add_argument("--percent", action="store_true", help="输出基于 0-5V 范围的百分比")
+    parser.add_argument("--map", type=str, default=None, metavar="MIN,MAX",
+                        help='将 0-5V 百分比映射到数值区间，格式 "min,max" 如 "-20,80"')
 
     args = parser.parse_args()
+
+    # --- 解析 --map 参数 ---
+    map_range = None
+    if args.map is not None:
+        try:
+            parts = args.map.split(",")
+            if len(parts) != 2:
+                raise ValueError
+            map_min, map_max = float(parts[0]), float(parts[1])
+            if map_min == map_max:
+                raise ValueError("映射区间两端不能相同")
+            map_range = (map_min, map_max)
+            args.percent = True  # --map 自动启用百分比显示
+        except ValueError as e:
+            err_msg = str(e) if str(e) != "" else "格式无效"
+            print(f"错误: --map 参数无效 '{args.map}'，请使用 'min,max' 格式，如 '-20,80' ({err_msg})", file=sys.stderr)
+            sys.exit(1)
 
     try:
         adc = ADS1115(bus=args.i2c_bus, address=args.address,
                       pga_idx=args.pga, dr_idx=args.rate)
 
         def pct(v):
-            """返回 0-5V 百分比后缀字符串，仅在 --percent 时输出"""
-            if args.percent:
-                p = v / 5.0 * 100.0
-                return f"  [{p:6.2f}%]"
-            return ""
+            """返回 0-5V 百分比/映射后缀字符串"""
+            if not args.percent:
+                return ""
+            p = v / 5.0 * 100.0
+            suffix = f"  [{p:6.2f}%]"
+            if map_range is not None:
+                mapped = map_range[0] + (p / 100.0) * (map_range[1] - map_range[0])
+                suffix += f"  (映射: {mapped:.2f})"
+            return suffix
 
         has_action = False
 
