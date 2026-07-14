@@ -283,6 +283,8 @@ def main():
   --delay          每次读取间隔毫秒 (默认 10ms)
   --config         显示配置寄存器详情
 
+  --percent        输出基于 0-5V 范围的百分比 (0.00%~100.00%)
+
 使用示例:
   ads1115                                    # 读取 AIN0 (默认参数)
   ads1115 -c 2                               # 读取 AIN2
@@ -293,6 +295,8 @@ def main():
   ads1115 -c 0 --continuous -n 10           # 连续模式读10次
   ads1115 --config                           # 查看配置寄存器
   ads1115 --scan --config                    # 扫描并查看配置
+  ads1115 -c 0 --percent                     # 读取 AIN0 并显示 0-5V 百分比
+  ads1115 --scan --percent                   # 扫描所有通道并显示百分比
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -307,12 +311,20 @@ def main():
     parser.add_argument("-n", "--count", type=int, default=1, help="读取次数 (默认 1)")
     parser.add_argument("--delay", type=int, default=10, help="每次读取间隔毫秒 (默认 10ms)")
     parser.add_argument("--config", action="store_true", help="显示配置寄存器详情")
+    parser.add_argument("--percent", action="store_true", help="输出基于 0-5V 范围的百分比")
 
     args = parser.parse_args()
 
     try:
         adc = ADS1115(bus=args.i2c_bus, address=args.address,
                       pga_idx=args.pga, dr_idx=args.rate)
+
+        def pct(v):
+            """返回 0-5V 百分比后缀字符串，仅在 --percent 时输出"""
+            if args.percent:
+                p = v / 5.0 * 100.0
+                return f"  [{p:6.2f}%]"
+            return ""
 
         has_action = False
 
@@ -328,14 +340,14 @@ def main():
                 time.sleep(0.05)
                 for i in range(args.count):
                     v = adc.read_continuous()
-                    print(f"  [{i}] {ch_name}: {v:+.6f} V  ({v*1000:.3f} mV)")
+                    print(f"  [{i}] {ch_name}: {v:+.6f} V  ({v*1000:.3f} mV){pct(v)}")
                     if i < args.count - 1:
                         time.sleep(args.delay / 1000.0)
             else:
                 print(f"读取 {ch_name} ({args.count} 次):")
                 for i in range(args.count):
                     v = adc.read_single(args.channel)
-                    print(f"  [{i}] {ch_name}: {v:+.6f} V  ({v*1000:.3f} mV)")
+                    print(f"  [{i}] {ch_name}: {v:+.6f} V  ({v*1000:.3f} mV){pct(v)}")
                     if i < args.count - 1:
                         time.sleep(args.delay / 1000.0)
 
@@ -354,7 +366,7 @@ def main():
             print(f"差分读取 AIN{pos} - AIN{neg} ({args.count} 次):")
             for i in range(args.count):
                 v = adc.read_diff(pos, neg)
-                print(f"  [{i}] AIN{pos}-AIN{neg}: {v:+.6f} V  ({v*1000:.3f} mV)")
+                print(f"  [{i}] AIN{pos}-AIN{neg}: {v:+.6f} V  ({v*1000:.3f} mV){pct(v)}")
                 if i < args.count - 1:
                     time.sleep(args.delay / 1000.0)
 
@@ -364,7 +376,7 @@ def main():
             print("\n===== 单端通道扫描 =====")
             results = adc.scan_all()
             for ch, v in results.items():
-                print(f"  {ch}: {v:+.6f} V  ({v*1000:.3f} mV)")
+                print(f"  {ch}: {v:+.6f} V  ({v*1000:.3f} mV){pct(v)}")
 
         # --- 显示配置 ---
         if args.config:
@@ -374,7 +386,7 @@ def main():
         # --- 默认行为: 读 AIN0 ---
         if not has_action:
             v = adc.read_single(0)
-            print(f"AIN0: {v:+.6f} V  ({v*1000:.3f} mV)")
+            print(f"AIN0: {v:+.6f} V  ({v*1000:.3f} mV){pct(v)}")
 
     except KeyboardInterrupt:
         print("\n用户中断")
